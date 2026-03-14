@@ -1,0 +1,2342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>化学单词卡 Pro</title>
+<style>
+  :root {
+    --primary-color: #00BFA5;
+    --bg-color: #F8F9FA;
+    --card-bg: #FFFFFF;
+    --text-main: #2D3748;
+    --text-muted: #718096;
+    --border-color: #E2E8F0;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-main);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+  }
+
+  .header {
+    width: 340px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+  }
+
+  .badge {
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 600;
+    background-color: var(--border-color);
+  }
+
+  .import-btn {
+    background: #EDF2F7;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    color: #4A5568;
+    transition: background 0.2s;
+  }
+  .import-btn:hover { background: #E2E8F0; }
+
+  .card-container {
+    width: 340px;
+    height: 420px;
+    perspective: 1200px;
+    margin-bottom: 30px;
+  }
+
+  .flashcard {
+    width: 100%;
+    height: 100%;
+    position: relative;
+    /* 加入了带回弹效果的 cubic-bezier 曲线 */
+    transition: transform 0.7s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    transform-style: preserve-3d;
+    cursor: pointer;
+  }
+
+  .flashcard.is-flipped {
+    transform: rotateY(180deg);
+  }
+
+  .card-face {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    backface-visibility: hidden;
+    background-color: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    display: flex;
+    flex-direction: column;
+    padding: 30px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.05), 0 10px 15px rgba(0,0,0,0.02);
+  }
+
+  .card-front { align-items: center; justify-content: center; }
+  .card-front h2 { font-size: 32px; color: var(--text-main); text-align: center; }
+  
+  .card-back { transform: rotateY(180deg); justify-content: flex-start; }
+  .meaning-zh { font-size: 24px; font-weight: 600; color: var(--primary-color); margin-bottom: 16px; text-align: center; }
+  .divider { height: 1px; background-color: var(--border-color); margin: 0 0 16px 0; }
+  .example-en { font-size: 16px; line-height: 1.5; margin-bottom: 8px; font-weight: 500; }
+  .example-zh { font-size: 14px; line-height: 1.5; color: var(--text-muted); }
+
+  .controls { display: flex; gap: 15px; width: 340px; }
+  .controls button {
+    flex: 1; padding: 16px; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 0.1s;
+  }
+  .controls button:active { transform: scale(0.95); }
+  .btn-unknown { background-color: #FFF5F5; color: #E53E3E; }
+  .btn-known { background-color: #E6FFFA; color: #319795; }
+  .progress { margin-top: 20px; font-size: 14px; color: var(--text-muted); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="badge" id="categoryBadge">分类</div>
+  <button class="import-btn" onclick="document.getElementById('fileInput').click()">导入 JSON</button>
+  <input type="file" id="fileInput" accept=".json" style="display: none;" onchange="importVocabulary(event)">
+</div>
+
+<div class="card-container" onclick="flipCard()">
+  <div class="flashcard" id="flashcard">
+    <div class="card-face card-front"><h2 id="wordEn">加载中...</h2></div>
+    <div class="card-face card-back">
+      <div class="meaning-zh" id="wordZh"></div>
+      <div class="divider"></div>
+      <div class="example-en" id="exampleEn"></div>
+      <div class="example-zh" id="exampleZh"></div>
+    </div>
+  </div>
+</div>
+
+<div class="controls">
+  <button class="btn-unknown" onclick="nextCard(false)">不认识</button>
+  <button class="btn-known" onclick="nextCard(true)">认识</button>
+</div>
+<div class="progress" id="progressText">0 / 0</div>
+
+<script>
+  // 音效合成器 (Web Audio API)
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  const audioCtx = new AudioContext();
+
+  function playSound(type) {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+    osc.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+
+    const now = audioCtx.currentTime;
+    if (type === 'flip') {
+      // 翻转音效：轻微的"嗖"声
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(300, now);
+      osc.frequency.exponentialRampToValueAtTime(600, now + 0.1);
+      gainNode.gain.setValueAtTime(0.1, now);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+      osc.start(now); osc.stop(now + 0.1);
+    } else if (type === 'known') {
+      // 认识：清脆的高音
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(600, now);
+      osc.frequency.setValueAtTime(800, now + 0.1);
+      gainNode.gain.setValueAtTime(0.1, now);
+      gainNode.gain.linearRampToValueAtTime(0, now + 0.2);
+      osc.start(now); osc.stop(now + 0.2);
+    } else if (type === 'unknown') {
+      // 不认识：低沉的提示音
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(200, now);
+      osc.frequency.exponentialRampToValueAtTime(150, now + 0.2);
+      gainNode.gain.setValueAtTime(0.05, now);
+      gainNode.gain.linearRampToValueAtTime(0, now + 0.2);
+      osc.start(now); osc.stop(now + 0.2);
+    }
+  }
+
+  // 词库
+  let vocabList = [
+   {
+    "category": "有机化学 - 基础",
+    "word_en": "Stereocenter",
+    "word_zh": "立体中心",
+    "example_en": "The molecule has two stereocenters, resulting in four possible stereoisomers.",
+    "example_zh": "该分子有两个立体中心，导致有四种可能的立体异构体。"
+  },
+  {
+    "category": "有机化学 - 基础",
+    "word_en": "Racemic mixture",
+    "word_zh": "外消旋混合物",
+    "example_en": "A racemic mixture contains equal amounts of left- and right-handed enantiomers.",
+    "example_zh": "外消旋混合物含有等量的左旋和右旋对映体。"
+  },
+  {
+    "category": "有机化学 - 基础",
+    "word_en": "Conformation",
+    "word_zh": "构象",
+    "example_en": "The chair conformation of cyclohexane is the most stable one.",
+    "example_zh": "环己烷的椅型构象是最稳定的。"
+  },
+  {
+    "category": "有机化学 - 基础",
+    "word_en": "Tautomerization",
+    "word_zh": "互变异构",
+    "example_en": "Keto-enol tautomerization is catalyzed by both acids and bases.",
+    "example_zh": "酮-烯醇互变异构可由酸和碱催化。"
+  },
+  {
+    "category": "有机化学 - 基础",
+    "word_en": "Aromaticity",
+    "word_zh": "芳香性",
+    "example_en": "Hückel's rule is used to estimate the aromaticity of a cyclic molecule.",
+    "example_zh": "休克尔规则用于评估环状分子的芳香性。"
+  },
+  {
+    "category": "有机化学 - 机理",
+    "word_en": "Carbocation",
+    "word_zh": "碳正离子",
+    "example_en": "A tertiary carbocation is stabilized by hyperconjugation.",
+    "example_zh": "叔碳正离子通过超共轭效应得到稳定。"
+  },
+  {
+    "category": "有机化学 - 机理",
+    "word_en": "Carbanion",
+    "word_zh": "碳负离子",
+    "example_en": "The carbanion intermediate is highly reactive and acts as a strong nucleophile.",
+    "example_zh": "碳负离子中间体具有高反应活性，充当强亲核试剂。"
+  },
+  {
+    "category": "有机化学 - 机理",
+    "word_en": "Free radical",
+    "word_zh": "自由基",
+    "example_en": "Halogenation of alkanes proceeds via a free radical mechanism.",
+    "example_zh": "烷烃的卤代反应通过自由基机理进行。"
+  },
+  {
+    "category": "有机化学 - 机理",
+    "word_en": "Transition state",
+    "word_zh": "过渡态",
+    "example_en": "The transition state represents the highest energy point along the reaction coordinate.",
+    "example_zh": "过渡态代表反应坐标上的最高能量点。"
+  },
+  {
+    "category": "有机化学 - 机理",
+    "word_en": "Intermediate",
+    "word_zh": "中间体",
+    "example_en": "Unlike a transition state, an intermediate has a finite lifetime.",
+    "example_zh": "与过渡态不同，中间体具有有限的寿命。"
+  },
+  {
+    "category": "有机化学 - 机理",
+    "word_en": "Leaving group",
+    "word_zh": "离去基团",
+    "example_en": "A good leaving group is the conjugate base of a strong acid.",
+    "example_zh": "好的离去基团是强酸的共轭碱。"
+  },
+  {
+    "category": "有机化学 - 反应",
+    "word_en": "Nucleophilic substitution",
+    "word_zh": "亲核取代",
+    "example_en": "SN2 is a concerted bimolecular nucleophilic substitution reaction.",
+    "example_zh": "SN2是一种协同的双分子亲核取代反应。"
+  },
+  {
+    "category": "有机化学 - 反应",
+    "word_en": "Electrophilic addition",
+    "word_zh": "亲电加成",
+    "example_en": "Alkenes typically undergo electrophilic addition reactions.",
+    "example_zh": "烯烃通常发生亲电加成反应。"
+  },
+  {
+    "category": "有机化学 - 反应",
+    "word_en": "Elimination",
+    "word_zh": "消除反应",
+    "example_en": "E2 elimination requires an anti-periplanar geometry.",
+    "example_zh": "E2消除反应需要反叠面几何构型。"
+  },
+  {
+    "category": "有机化学 - 反应",
+    "word_en": "Oxidation",
+    "word_zh": "氧化反应",
+    "example_en": "Primary alcohols can be oxidized to aldehydes or carboxylic acids.",
+    "example_zh": "伯醇可被氧化成醛或羧酸。"
+  },
+  {
+    "category": "有机化学 - 合成/文献",
+    "word_en": "Regioselectivity",
+    "word_zh": "区域选择性",
+    "example_en": "Markovnikov's rule predicts the regioselectivity of electrophilic addition.",
+    "example_zh": "马氏规则预测了亲电加成反应的区域选择性。"
+  },
+  {
+    "category": "有机化学 - 合成/文献",
+    "word_en": "Stereospecificity",
+    "word_zh": "立体专一性",
+    "example_en": "The SN2 reaction exhibits complete stereospecificity with inversion of configuration.",
+    "example_zh": "SN2反应表现出完全的立体专一性，并伴随构型翻转。"
+  },
+  {
+    "category": "有机化学 - 合成/文献",
+    "word_en": "Chemoselectivity",
+    "word_zh": "化学选择性",
+    "example_en": "The reducing agent showed excellent chemoselectivity towards ketones over esters.",
+    "example_zh": "该还原剂对酮显示出优于酯的极佳化学选择性。"
+  },
+  {
+    "category": "有机化学 - 合成/文献",
+    "word_en": "Protecting group",
+    "word_zh": "保护基",
+    "example_en": "A benzyl ether is often used as a protecting group for alcohols.",
+    "example_zh": "苄醚常被用作醇的保护基。"
+  },
+  {
+    "category": "有机化学 - 合成/文献",
+    "word_en": "Cross-coupling",
+    "word_zh": "交叉偶联",
+    "example_en": "Palladium-catalyzed cross-coupling reactions are indispensable in modern organic synthesis.",
+    "example_zh": "钯催化的交叉偶联反应在现代有机合成中不可或缺。"
+  },
+  {
+    "category": "有机化学 - 合成/文献",
+    "word_en": "Asymmetric induction",
+    "word_zh": "不对称诱导",
+    "example_en": "The chiral auxiliary provides high asymmetric induction in the aldol reaction.",
+    "example_zh": "手性辅剂在羟醛缩合反应中提供了高度的不对称诱导。"
+  },
+  {
+    "category": "有机化学 - 合成/文献",
+    "word_en": "Retrosynthetic analysis",
+    "word_zh": "逆合成分析",
+    "example_en": "Retrosynthetic analysis involves breaking down a target molecule into simpler precursors.",
+    "example_zh": "逆合成分析涉及将目标分子分解为更简单的前体。"
+  },
+  {
+    "category": "有机化学 - 合成/文献",
+    "word_en": "Total synthesis",
+    "word_zh": "全合成",
+    "example_en": "The total synthesis of this natural product required 25 linear steps.",
+    "example_zh": "该天然产物的全合成需要25个线性步骤。"
+  },
+  {
+    "category": "有机化学 - 合成/文献",
+    "word_en": "Organocatalysis",
+    "word_zh": "有机催化",
+    "example_en": "Organocatalysis avoids the use of toxic transition metals.",
+    "example_zh": "有机催化避免了使用有毒的过渡金属。"
+  },
+  {
+    "category": "有机化学 - 实验操作",
+    "word_en": "Reflux",
+    "word_zh": "回流",
+    "example_en": "The mixture was heated to reflux for 12 hours.",
+    "example_zh": "混合物被加热回流12小时。"
+  },
+  {
+    "category": "有机化学 - 实验操作",
+    "word_en": "Recrystallization",
+    "word_zh": "重结晶",
+    "example_en": "The crude product was purified by recrystallization from ethanol.",
+    "example_zh": "粗产物通过在乙醇中重结晶进行提纯。"
+  },
+  {
+    "category": "有机化学 - 实验操作",
+    "word_en": "Distillation",
+    "word_zh": "蒸馏",
+    "example_en": "Fractional distillation is used to separate liquids with close boiling points.",
+    "example_zh": "分馏用于分离沸点相近的液体。"
+  },
+  {
+    "category": "有机化学 - 实验操作",
+    "word_en": "Work-up",
+    "word_zh": "后处理",
+    "example_en": "Aqueous work-up is necessary to remove inorganic salts from the organic layer.",
+    "example_zh": "水相后处理对于从有机层中去除无机盐是必要的。"
+  },
+  {
+    "category": "有机化学 - 实验操作",
+    "word_en": "Anhydrous",
+    "word_zh": "无水的",
+    "example_en": "The reaction must be carried out under strictly anhydrous conditions.",
+    "example_zh": "反应必须在严格无水的条件下进行。"
+  },
+  {
+    "category": "有机化学 - 实验操作",
+    "word_en": "Yield",
+    "word_zh": "产率",
+    "example_en": "The isolated yield of the target compound was 85%.",
+    "example_zh": "目标化合物的分离产率为85%。"
+  },
+  {
+    "category": "有机化学 - 官能团",
+    "word_en": "Alkyne",
+    "word_zh": "炔烃",
+    "example_en": "Terminal alkynes are weakly acidic and can be deprotonated by strong bases.",
+    "example_zh": "端炔具有弱酸性，可被强碱去质子化。"
+  },
+  {
+    "category": "有机化学 - 官能团",
+    "word_en": "Arene",
+    "word_zh": "芳烃",
+    "example_en": "Arenes undergo electrophilic aromatic substitution rather than addition.",
+    "example_zh": "芳烃发生亲电芳香取代反应而不是加成反应。"
+  },
+  {
+    "category": "有机化学 - 官能团",
+    "word_en": "Haloalkane",
+    "word_zh": "卤代烷",
+    "example_en": "Primary haloalkanes are excellent substrates for SN2 reactions.",
+    "example_zh": "伯卤代烷是SN2反应的优良底物。"
+  },
+  {
+    "category": "有机化学 - 官能团",
+    "word_en": "Ether",
+    "word_zh": "醚",
+    "example_en": "Diethyl ether is a common aprotic solvent used in Grignard reactions.",
+    "example_zh": "乙醚是格氏反应中常用的非质子溶剂。"
+  },
+  {
+    "category": "有机化学 - 官能团",
+    "word_en": "Amine",
+    "word_zh": "胺",
+    "example_en": "Amines are organic bases that can form quaternary ammonium salts.",
+    "example_zh": "胺是能够形成季铵盐的有机碱。"
+  },
+  {
+    "category": "有机化学 - 官能团",
+    "word_en": "Thiol",
+    "word_zh": "硫醇",
+    "example_en": "Thiols have a strong, characteristic odor and form disulfide bonds upon oxidation.",
+    "example_zh": "硫醇具有强烈的特征气味，并在氧化后形成二硫键。"
+  },
+  {
+    "category": "有机化学 - 官能团",
+    "word_en": "Aldehyde",
+    "word_zh": "醛",
+    "example_en": "Aldehydes are more reactive towards nucleophilic addition than ketones.",
+    "example_zh": "醛对亲核加成反应的活性高于酮。"
+  },
+  {
+    "category": "有机化学 - 官能团",
+    "word_en": "Ketone",
+    "word_zh": "酮",
+    "example_en": "The reduction of a ketone yields a secondary alcohol.",
+    "example_zh": "酮的还原产生仲醇。"
+  },
+  {
+    "category": "有机化学 - 官能团",
+    "word_en": "Carboxylic acid",
+    "word_zh": "羧酸",
+    "example_en": "Carboxylic acids can be converted to acyl chlorides using thionyl chloride.",
+    "example_zh": "羧酸可以使用氯化亚砜转化为酰氯。"
+  },
+  {
+    "category": "有机化学 - 官能团",
+    "word_en": "Ester",
+    "word_zh": "酯",
+    "example_en": "Fischer esterification is an equilibrium reaction between an alcohol and a carboxylic acid.",
+    "example_zh": "费歇尔酯化是醇和羧酸之间的平衡反应。"
+  },
+  {
+    "category": "有机化学 - 官能团",
+    "word_en": "Amide",
+    "word_zh": "酰胺",
+    "example_en": "The amide bond is highly stable due to resonance stabilization.",
+    "example_zh": "由于共轭稳定作用，酰胺键高度稳定。"
+  },
+  {
+    "category": "有机化学 - 官能团",
+    "word_en": "Nitrile",
+    "word_zh": "腈",
+    "example_en": "Hydrolysis of a nitrile under acidic conditions affords a carboxylic acid.",
+    "example_zh": "腈在酸性条件下水解得到羧酸。"
+  },
+  {
+    "category": "有机化学 - 物理性质",
+    "word_en": "Electronegativity",
+    "word_zh": "电负性",
+    "example_en": "Differences in electronegativity create polar covalent bonds.",
+    "example_zh": "电负性的差异导致了极性共价键的产生。"
+  },
+  {
+    "category": "有机化学 - 物理性质",
+    "word_en": "Dipole moment",
+    "word_zh": "偶极矩",
+    "example_en": "Carbon tetrachloride has a net zero dipole moment due to its tetrahedral symmetry.",
+    "example_zh": "由于四面体对称性，四氯化碳的净偶极矩为零。"
+  },
+  {
+    "category": "有机化学 - 物理性质",
+    "word_en": "Hydrogen bond",
+    "word_zh": "氢键",
+    "example_en": "Intermolecular hydrogen bonds significantly increase the boiling point of alcohols.",
+    "example_zh": "分子间氢键显著提高了醇的沸点。"
+  },
+  {
+    "category": "有机化学 - 物理性质",
+    "word_en": "Solubility",
+    "word_zh": "溶解度",
+    "example_en": "The solubility of amines in water decreases as the hydrocarbon chain lengthens.",
+    "example_zh": "胺在水中的溶解度随着烃链的延长而降低。"
+  },
+  {
+    "category": "有机化学 - 电子效应",
+    "word_en": "Resonance",
+    "word_zh": "共振效应",
+    "example_en": "The phenoxide ion is stabilized by resonance electron delocalization.",
+    "example_zh": "苯氧负离子通过共振电子离域得到稳定。"
+  },
+  {
+    "category": "有机化学 - 电子效应",
+    "word_en": "Inductive effect",
+    "word_zh": "诱导效应",
+    "example_en": "Electron-withdrawing groups increase the acidity of carboxylic acids via the inductive effect.",
+    "example_zh": "吸电子基团通过诱导效应增加羧酸的酸性。"
+  },
+  {
+    "category": "有机化学 - 电子效应",
+    "word_en": "Hyperconjugation",
+    "word_zh": "超共轭效应",
+    "example_en": "Hyperconjugation involves the interaction of sigma bond electrons with an adjacent empty p orbital.",
+    "example_zh": "超共轭效应涉及σ键电子与相邻空p轨道的相互作用。"
+  },
+  {
+    "category": "有机化学 - 反应类型",
+    "word_en": "Polymerization",
+    "word_zh": "聚合反应",
+    "example_en": "Radical polymerization of styrene yields polystyrene.",
+    "example_zh": "苯乙烯的自由基聚合产生聚苯乙烯。"
+  },
+  {
+    "category": "有机化学 - 反应类型",
+    "word_en": "Condensation",
+    "word_zh": "缩合反应",
+    "example_en": "The aldol condensation results in an alpha,beta-unsaturated carbonyl compound.",
+    "example_zh": "羟醛缩合反应生成α,β-不饱和羰基化合物。"
+  },
+  {
+    "category": "有机化学 - 反应类型",
+    "word_en": "Rearrangement",
+    "word_zh": "重排反应",
+    "example_en": "The Wagner-Meerwein rearrangement involves a shift of a methyl group to an adjacent carbocation.",
+    "example_zh": "瓦格纳-梅尔魏因重排涉及甲基向相邻碳正离子的迁移。"
+  },
+  {
+    "category": "有机化学 - 试剂",
+    "word_en": "Grignard reagent",
+    "word_zh": "格氏试剂",
+    "example_en": "The Grignard reagent acts as a strong carbon nucleophile.",
+    "example_zh": "格氏试剂充当强碳亲核试剂。"
+  },
+  {
+    "category": "有机化学 - 试剂",
+    "word_en": "Lithium aluminum hydride",
+    "word_zh": "氢化铝锂",
+    "example_en": "Lithium aluminum hydride is a powerful reducing agent capable of reducing esters to primary alcohols.",
+    "example_zh": "氢化铝锂是一种强还原剂，能将酯还原成伯醇。"
+  },
+  {
+    "category": "有机化学 - 试剂",
+    "word_en": "Ozone",
+    "word_zh": "臭氧",
+    "example_en": "Ozonolysis cleaves the carbon-carbon double bond to form carbonyl compounds.",
+    "example_zh": "臭氧化反应裂解碳碳双键以形成羰基化合物。"
+  },
+  {
+    "category": "有机化学 - 波谱分析",
+    "word_en": "Spectroscopy",
+    "word_zh": "波谱学",
+    "example_en": "Spectroscopy is essential for the structural elucidation of organic compounds.",
+    "example_zh": "波谱学对于有机化合物的结构解析至关重要。"
+  },
+  {
+    "category": "有机化学 - 波谱分析",
+    "word_en": "Chemical shift",
+    "word_zh": "化学位移",
+    "example_en": "Electronegative atoms cause a downfield chemical shift in NMR spectra.",
+    "example_zh": "电负性原子在NMR波谱中引起化学位移向低场移动。"
+  },
+  {
+    "category": "有机化学 - 波谱分析",
+    "word_en": "Coupling constant",
+    "word_zh": "偶合常数",
+    "example_en": "The J coupling constant helps determine the stereochemistry of double bonds.",
+    "example_zh": "J偶合常数有助于确定双键的立体化学。"
+  },
+  {
+    "category": "有机化学 - 波谱分析",
+    "word_en": "Spin-spin splitting",
+    "word_zh": "自旋-自旋裂分",
+    "example_en": "Spin-spin splitting patterns follow the n+1 rule in 1H NMR.",
+    "example_zh": "在核磁共振氢谱中，自旋-自旋裂分模式遵循n+1规则。"
+  },
+  {
+    "category": "有机化学 - 波谱分析",
+    "word_en": "Shielding",
+    "word_zh": "屏蔽效应",
+    "example_en": "High electron density leads to increased shielding of the nucleus.",
+    "example_zh": "高电子密度导致原子核的屏蔽效应增强。"
+  },
+  {
+    "category": "有机化学 - 波谱分析",
+    "word_en": "Integration",
+    "word_zh": "积分值",
+    "example_en": "The integration of the NMR peak is proportional to the number of equivalent protons.",
+    "example_zh": "NMR峰的积分值与等效质子的数量成正比。"
+  },
+  {
+    "category": "有机化学 - 波谱分析",
+    "word_en": "Wavenumber",
+    "word_zh": "波数",
+    "example_en": "The carbonyl group exhibits a strong IR stretching band around wavenumber 1700 cm-1.",
+    "example_zh": "羰基在波数1700 cm-1附近显示出强的IR伸缩振动吸收带。"
+  },
+  {
+    "category": "有机化学 - 波谱分析",
+    "word_en": "Fingerprint region",
+    "word_zh": "指纹区",
+    "example_en": "The IR fingerprint region is unique to each specific molecule.",
+    "example_zh": "红外指纹区对每个特定分子都是唯一的。"
+  },
+  {
+    "category": "有机化学 - 波谱分析",
+    "word_en": "Molecular ion",
+    "word_zh": "分子离子",
+    "example_en": "The molecular ion peak in mass spectrometry indicates the molecular weight.",
+    "example_zh": "质谱中的分子离子峰指示了分子量。"
+  },
+  {
+    "category": "有机化学 - 波谱分析",
+    "word_en": "Base peak",
+    "word_zh": "基峰",
+    "example_en": "The base peak represents the most stable and abundant fragment ion.",
+    "example_zh": "基峰代表最稳定和丰度最高的碎片离子。"
+  },
+  {
+    "category": "有机化学 - 波谱分析",
+    "word_en": "Fragmentation",
+    "word_zh": "裂解",
+    "example_en": "Mass spectrometry relies on the fragmentation pattern to deduce structural information.",
+    "example_zh": "质谱法依赖于裂解模式来推断结构信息。"
+  },
+  {
+    "category": "有机化学 - 光化学",
+    "word_en": "Photochemistry",
+    "word_zh": "光化学",
+    "example_en": "Photochemistry explores reactions initiated by the absorption of light.",
+    "example_zh": "光化学探索由光吸收引发的反应。"
+  },
+  {
+    "category": "有机化学 - 光化学",
+    "word_en": "Fluorescence",
+    "word_zh": "荧光",
+    "example_en": "The conjugated dye exhibits strong fluorescence under UV light.",
+    "example_zh": "共轭染料在紫外光下表现出强烈的荧光。"
+  },
+  {
+    "category": "有机化学 - 光化学",
+    "word_en": "Excited state",
+    "word_zh": "激发态",
+    "example_en": "Molecules in the excited state are generally more reactive.",
+    "example_zh": "处于激发态的分子通常更具反应性。"
+  },
+  {
+    "category": "有机化学 - 热力学与动力学",
+    "word_en": "Thermodynamic control",
+    "word_zh": "热力学控制",
+    "example_en": "High temperatures generally favor products formed under thermodynamic control.",
+    "example_zh": "高温通常有利于热力学控制下生成的产物。"
+  },
+  {
+    "category": "有机化学 - 热力学与动力学",
+    "word_en": "Kinetic control",
+    "word_zh": "动力学控制",
+    "example_en": "Reactions under kinetic control yield the product that forms fastest.",
+    "example_zh": "在动力学控制下的反应会生成形成速度最快的产物。"
+  },
+  {
+    "category": "有机化学 - 热力学与动力学",
+    "word_en": "Activation energy",
+    "word_zh": "活化能",
+    "example_en": "The catalyst accelerates the reaction rate by lowering the activation energy.",
+    "example_zh": "催化剂通过降低活化能来加快反应速率。"
+  },
+  {
+    "category": "有机化学 - 催化",
+    "word_en": "Catalysis",
+    "word_zh": "催化",
+    "example_en": "Asymmetric catalysis is a key technology for producing single enantiomers.",
+    "example_zh": "不对称催化是生产单一对映体的关键技术。"
+  },
+  {
+    "category": "有机化学 - 催化",
+    "word_en": "Enzyme",
+    "word_zh": "酶",
+    "example_en": "Enzymes are highly specific biological catalysts.",
+    "example_zh": "酶是高度专一的生物催化剂。"
+  },
+  {
+    "category": "有机化学 - 立体化学",
+    "word_en": "Chirality",
+    "word_zh": "手性",
+    "example_en": "Chirality plays a crucial role in drug design and recognition.",
+    "example_zh": "手性在药物设计和识别中起着至关重要的作用。"
+  },
+  {
+    "category": "有机化学 - 立体化学",
+    "word_en": "Prochiral",
+    "word_zh": "潜手性的",
+    "example_en": "The ketone is a prochiral molecule that can be reduced to a chiral alcohol.",
+    "example_zh": "该酮是一个潜手性分子，可被还原为手性醇。"
+  },
+  {
+    "category": "有机化学 - 立体化学",
+    "word_en": "Diastereomer",
+    "word_zh": "非对映异构体",
+    "example_en": "Diastereomers have different physical properties and can be separated by chromatography.",
+    "example_zh": "非对映异构体具有不同的物理性质，可通过色谱法分离。"
+  },
+  {
+    "category": "有机化学 - 立体化学",
+    "word_en": "Meso compound",
+    "word_zh": "内消旋化合物",
+    "example_en": "A meso compound has multiple stereocenters but is achiral due to an internal plane of symmetry.",
+    "example_zh": "内消旋化合物具有多个立体中心，但由于具有内部对称面而是非手性的。"
+  },
+  {
+    "category": "有机化学 - 立体化学",
+    "word_en": "Epimer",
+    "word_zh": "差向异构体",
+    "example_en": "Glucose and galactose are epimers that differ at a single stereocenter.",
+    "example_zh": "葡萄糖和半乳糖是在单个立体中心上不同的差向异构体。"
+  },
+  {
+    "category": "有机化学 - 立体化学",
+    "word_en": "Anomer",
+    "word_zh": "端基异构体",
+    "example_en": "Alpha and beta D-glucopyranose are anomers.",
+    "example_zh": "α-和β-D-吡喃葡萄糖是端基异构体。"
+  },
+  {
+    "category": "有机化学 - 生物分子",
+    "word_en": "Carbohydrate",
+    "word_zh": "碳水化合物",
+    "example_en": "Carbohydrates are the most abundant organic compounds in nature.",
+    "example_zh": "碳水化合物是自然界中最丰富的有机化合物。"
+  },
+  {
+    "category": "有机化学 - 生物分子",
+    "word_en": "Glycoside",
+    "word_zh": "糖苷",
+    "example_en": "Formation of a glycoside involves the reaction of a sugar anomeric carbon with an alcohol.",
+    "example_zh": "糖苷的形成涉及糖端基碳与醇的反应。"
+  },
+  {
+    "category": "有机化学 - 生物分子",
+    "word_en": "Peptide",
+    "word_zh": "肽",
+    "example_en": "Solid-phase peptide synthesis enables the efficient assembly of long amino acid sequences.",
+    "example_zh": "固相多肽合成能够高效组装长氨基酸序列。"
+  },
+  {
+    "category": "有机化学 - 生物分子",
+    "word_en": "Amino acid",
+    "word_zh": "氨基酸",
+    "example_en": "All proteinogenic amino acids, except glycine, are chiral.",
+    "example_zh": "除甘氨酸外，所有蛋白质生原氨基酸都是手性的。"
+  },
+  {
+    "category": "有机化学 - 生物分子",
+    "word_en": "Isoelectric point",
+    "word_zh": "等电点",
+    "example_en": "At its isoelectric point, an amino acid has no net electrical charge.",
+    "example_zh": "在其等电点时，氨基酸没有净电荷。"
+  },
+  {
+    "category": "有机化学 - 生物分子",
+    "word_en": "Zwitterion",
+    "word_zh": "两性离子",
+    "example_en": "In neutral aqueous solutions, amino acids exist predominantly as zwitterions.",
+    "example_zh": "在呈中性的水溶液中，氨基酸主要以两性离子的形式存在。"
+  },
+  {
+    "category": "有机化学 - 生物分子",
+    "word_en": "Lipid",
+    "word_zh": "脂质",
+    "example_en": "Lipids are hydrophobic or amphiphilic small molecules.",
+    "example_zh": "脂质是疏水或两亲性小分子。"
+  },
+  {
+    "category": "有机化学 - 反应",
+    "word_en": "Saponification",
+    "word_zh": "皂化反应",
+    "example_en": "Saponification is the base-promoted hydrolysis of an ester.",
+    "example_zh": "皂化反应是碱促进的酯水解反应。"
+  },
+  {
+    "category": "有机化学 - 天然产物",
+    "word_en": "Terpene",
+    "word_zh": "萜烯",
+    "example_en": "Terpenes are derived biosynthetically from isoprene units.",
+    "example_zh": "萜烯在生物合成上衍生自异戊二烯单元。"
+  },
+  {
+    "category": "有机化学 - 天然产物",
+    "word_en": "Alkaloid",
+    "word_zh": "生物碱",
+    "example_en": "Many alkaloids exhibit significant pharmacological activities.",
+    "example_zh": "许多生物碱表现出显著的药理活性。"
+  },
+  {
+    "category": "有机化学 - 杂环",
+    "word_en": "Heterocycle",
+    "word_zh": "杂环化合物",
+    "example_en": "Nitrogen-containing heterocycles are ubiquitous in pharmaceutical drugs.",
+    "example_zh": "含氮杂环在药物中无处不在。"
+  },
+  {
+    "category": "有机化学 - 杂环",
+    "word_en": "Pyridine",
+    "word_zh": "吡啶",
+    "example_en": "Pyridine is often used as both a solvent and a mild base.",
+    "example_zh": "吡啶常被用作溶剂和温和的碱。"
+  },
+  {
+    "category": "有机化学 - 杂环",
+    "word_en": "Pyrrole",
+    "word_zh": "吡咯",
+    "example_en": "Pyrrole undergoes electrophilic aromatic substitution predominantly at the C2 position.",
+    "example_zh": "吡咯主要在C2位置发生亲电芳香取代反应。"
+  },
+  {
+    "category": "有机化学 - 杂环",
+    "word_en": "Furan",
+    "word_zh": "呋喃",
+    "example_en": "Furan can act as a diene in the Diels-Alder cycloaddition.",
+    "example_zh": "呋喃在狄尔斯-阿尔德环加成中可作为双烯体。"
+  },
+  {
+    "category": "有机化学 - 杂环",
+    "word_en": "Thiophene",
+    "word_zh": "噻吩",
+    "example_en": "Thiophene is more aromatic and less reactive than furan.",
+    "example_zh": "噻吩比呋喃更具芳香性且反应活性较低。"
+  },
+  {
+    "category": "有机化学 - 金属有机",
+    "word_en": "Organometallic",
+    "word_zh": "有机金属的",
+    "example_en": "Organometallic chemistry bridges organic and inorganic domains.",
+    "example_zh": "有机金属化学桥接了有机和无机领域。"
+  },
+  {
+    "category": "有机化学 - 金属有机",
+    "word_en": "Ligand",
+    "word_zh": "配体",
+    "example_en": "Phosphine ligands can tune the electronic and steric properties of the metal center.",
+    "example_zh": "膦配体可以调节金属中心的电子和立体性质。"
+  },
+  {
+    "category": "有机化学 - 金属有机",
+    "word_en": "Coordination",
+    "word_zh": "配位",
+    "example_en": "Coordination of the alkene to the metal is the first step in the catalytic cycle.",
+    "example_zh": "烯烃与金属的配位是催化循环的第一步。"
+  },
+  {
+    "category": "有机化学 - 金属有机",
+    "word_en": "Oxidative addition",
+    "word_zh": "氧化加成",
+    "example_en": "Oxidative addition increases the formal oxidation state of the metal by two.",
+    "example_zh": "氧化加成使金属的形式氧化态增加二。"
+  },
+  {
+    "category": "有机化学 - 金属有机",
+    "word_en": "Reductive elimination",
+    "word_zh": "还原消除",
+    "example_en": "Reductive elimination is often the product-forming step.",
+    "example_zh": "还原消除通常是产物生成步骤。"
+  },
+  {
+    "category": "有机化学 - 金属有机",
+    "word_en": "Transmetalation",
+    "word_zh": "金属转移",
+    "example_en": "In the Suzuki coupling, transmetalation transfers the organic group from boron to palladium.",
+    "example_zh": "在铃木偶联反应中，金属转移将有机基团从硼转移到钯。"
+  },
+  {
+    "category": "有机化学 - 金属有机",
+    "word_en": "Metathesis",
+    "word_zh": "复分解反应",
+    "example_en": "Olefin metathesis reorganizes carbon-carbon double bonds.",
+    "example_zh": "烯烃复分解反应重组了碳碳双键。"
+  },
+  {
+    "category": "有机化学 - 周环反应",
+    "word_en": "Pericyclic reaction",
+    "word_zh": "周环反应",
+    "example_en": "A pericyclic reaction proceeds via a concerted mechanism with a cyclic transition state.",
+    "example_zh": "周环反应通过具有环状过渡态的协同机理进行。"
+  },
+  {
+    "category": "有机化学 - 周环反应",
+    "word_en": "Cycloaddition",
+    "word_zh": "环加成",
+    "example_en": "Thermal [2+2] cycloadditions are symmetrically forbidden.",
+    "example_zh": "热[2+2]环加成在对称性上是禁阻的。"
+  },
+  {
+    "category": "有机化学 - 周环反应",
+    "word_en": "Diels-Alder reaction",
+    "word_zh": "狄尔斯-阿尔德反应",
+    "example_en": "The Diels-Alder reaction is a powerful [4+2] cycloaddition to form six-membered rings.",
+    "example_zh": "狄尔斯-阿尔德反应是形成六元环的强效[4+2]环加成反应。"
+  },
+  {
+    "category": "有机化学 - 周环反应",
+    "word_en": "Sigmatropic rearrangement",
+    "word_zh": "σ迁移重排",
+    "example_en": "The Claisen rearrangement is a [3,3]-sigmatropic rearrangement of allyl vinyl ethers.",
+    "example_zh": "克莱森重排是烯丙基乙烯基醚的[3,3]-σ迁移重排。"
+  },
+  {
+    "category": "有机化学 - 周环反应",
+    "word_en": "Electrocyclic reaction",
+    "word_zh": "电环化反应",
+    "example_en": "The electrocyclic ring opening of cyclobutene is conrotatory under thermal conditions.",
+    "example_zh": "在热条件下，环丁烯的电环化开环是对旋的。"
+  },
+  {
+    "category": "有机化学 - 轨道与成键",
+    "word_en": "HOMO",
+    "word_zh": "最高占据分子轨道",
+    "example_en": "The nucleophile donates electrons from its HOMO to the electrophile.",
+    "example_zh": "亲核试剂从其HOMO向亲电试剂提供电子。"
+  },
+  {
+    "category": "有机化学 - 轨道与成键",
+    "word_en": "LUMO",
+    "word_zh": "最低未占分子轨道",
+    "example_en": "The electrophile accepts electrons into its LUMO.",
+    "example_zh": "亲电试剂将其LUMO用于接受电子。"
+  },
+  {
+    "category": "有机化学 - 轨道与成键",
+    "word_en": "Conjugation",
+    "word_zh": "共轭",
+    "example_en": "Conjugation lowers the overall energy of the molecule by delocalizing pi electrons.",
+    "example_zh": "共轭通过离域π电子来降低分子的总能量。"
+  },
+  {
+    "category": "有机化学 - 命名反应",
+    "word_en": "Aldol reaction",
+    "word_zh": "羟醛反应",
+    "example_en": "The aldol reaction combines two carbonyl compounds to form a beta-hydroxy carbonyl compound.",
+    "example_zh": "羟醛反应将两个羰基化合物结合形成β-羟基羰基化合物。"
+  },
+  {
+    "category": "有机化学 - 命名反应",
+    "word_en": "Wittig reaction",
+    "word_zh": "维蒂希反应",
+    "example_en": "The Wittig reaction converts a ketone or aldehyde into an alkene using a phosphonium ylide.",
+    "example_zh": "维蒂希反应使用鏻叶立德将酮或醛转化为烯烃。"
+  },
+  {
+    "category": "有机化学 - 命名反应",
+    "word_en": "Friedel-Crafts alkylation",
+    "word_zh": "傅-克烷基化反应",
+    "example_en": "Friedel-Crafts alkylation is prone to carbocation rearrangement.",
+    "example_zh": "傅-克烷基化反应容易发生碳正离子重排。"
+  },
+  {
+    "category": "有机化学 - 命名反应",
+    "word_en": "Baeyer-Villiger oxidation",
+    "word_zh": "拜耳-维立格氧化反应",
+    "example_en": "The Baeyer-Villiger oxidation transforms ketones into esters using peroxy acids.",
+    "example_zh": "拜耳-维立格氧化反应使用过氧酸将酮转化为酯。"
+  },
+  {
+    "category": "有机化学 - 命名反应",
+    "word_en": "Cannizzaro reaction",
+    "word_zh": "坎尼扎罗反应",
+    "example_en": "The Cannizzaro reaction is a disproportionation of non-enolizable aldehydes.",
+    "example_zh": "坎尼扎罗反应是无α-氢醛的歧化反应。"
+  },
+  {
+    "category": "有机化学 - 命名反应",
+    "word_en": "Michael addition",
+    "word_zh": "迈克尔加成反应",
+    "example_en": "Michael addition is a conjugate addition of a nucleophile to an alpha,beta-unsaturated carbonyl.",
+    "example_zh": "迈克尔加成反应是亲核试剂对α,β-不饱和羰基的共轭加成。"
+  },
+  {
+    "category": "有机化学 - 命名反应",
+    "word_en": "Robinson annulation",
+    "word_zh": "罗宾逊成环反应",
+    "example_en": "The Robinson annulation constructs a six-membered ring via tandem Michael addition and aldol condensation.",
+    "example_zh": "罗宾逊成环反应通过串联的迈克尔加成和羟醛缩合构建六元环。"
+  },
+  {
+    "category": "有机化学 - 命名反应",
+    "word_en": "Heck reaction",
+    "word_zh": "赫克反应",
+    "example_en": "The Heck reaction couples an aryl halide with an alkene in the presence of a palladium catalyst.",
+    "example_zh": "赫克反应在钯催化剂存在下将芳基卤化物与烯烃偶联。"
+  },
+  {
+    "category": "有机化学 - 命名反应",
+    "word_en": "Suzuki coupling",
+    "word_zh": "铃木偶联反应",
+    "example_en": "Suzuki coupling involves the reaction of an aryl halide with an organoboronic acid.",
+    "example_zh": "铃木偶联反应涉及芳基卤化物与有机硼酸的反应。"
+  },
+  {
+    "category": "有机化学 - 命名反应",
+    "word_en": "Sonogashira coupling",
+    "word_zh": "园头偶联反应",
+    "example_en": "Sonogashira coupling is used to form carbon-carbon bonds between a terminal alkyne and an aryl halide.",
+    "example_zh": "园头偶联反应用于在端炔和芳基卤化物之间形成碳碳键。"
+  },
+  {
+    "category": "有机化学 - 官能团转化",
+    "word_en": "Hydroboration",
+    "word_zh": "硼氢化反应",
+    "example_en": "Hydroboration-oxidation of an alkene yields an anti-Markovnikov alcohol.",
+    "example_zh": "烯烃的硼氢化-氧化反应生成反马氏醇。"
+  },
+  {
+    "category": "有机化学 - 官能团转化",
+    "word_en": "Oxymercuration",
+    "word_zh": "羟汞化反应",
+    "example_en": "Oxymercuration-demercuration hydrates alkenes without carbocation rearrangements.",
+    "example_zh": "羟汞化-脱汞反应可在不发生碳正离子重排的情况下使烯烃水合。"
+  },
+  {
+    "category": "有机化学 - 官能团转化",
+    "word_en": "Epoxidation",
+    "word_zh": "环氧化反应",
+    "example_en": "Sharpless asymmetric epoxidation is highly stereoselective for allylic alcohols.",
+    "example_zh": "夏普莱斯不对称环氧化对烯丙醇具有高度立体选择性。"
+  },
+  {
+    "category": "有机化学 - 官能团转化",
+    "word_en": "Dihydroxylation",
+    "word_zh": "双羟基化反应",
+    "example_en": "Osmium tetroxide catalyzes the syn-dihydroxylation of alkenes.",
+    "example_zh": "四氧化锇催化烯烃的顺式双羟基化反应。"
+  },
+  {
+    "category": "有机化学 - 官能团转化",
+    "word_en": "Ozonolysis",
+    "word_zh": "臭氧化反应",
+    "example_en": "Ozonolysis of cyclohexene followed by reductive workup yields hexanedial.",
+    "example_zh": "环己烯的臭氧化及随后的还原后处理生成己二醛。"
+  },
+  {
+    "category": "有机化学 - 官能团转化",
+    "word_en": "Hydrogenation",
+    "word_zh": "氢化反应",
+    "example_en": "Catalytic hydrogenation of an alkyne using Lindlar catalyst produces a cis-alkene.",
+    "example_zh": "使用林德拉催化剂对炔烃进行催化氢化生成顺式烯烃。"
+  },
+  {
+    "category": "有机化学 - 官能团转化",
+    "word_en": "Esterification",
+    "word_zh": "酯化反应",
+    "example_en": "Fischer esterification requires an acidic catalyst to proceed at a reasonable rate.",
+    "example_zh": "费歇尔酯化需要酸性催化剂才能以合理的速率进行。"
+  },
+  {
+    "category": "有机化学 - 官能团转化",
+    "word_en": "Amidation",
+    "word_zh": "酰胺化反应",
+    "example_en": "Direct amidation of carboxylic acids with amines requires high temperatures or coupling reagents.",
+    "example_zh": "羧酸与胺的直接酰胺化需要高温或偶联试剂。"
+  },
+  {
+    "category": "有机化学 - 官能团转化",
+    "word_en": "Decarboxylation",
+    "word_zh": "脱羧反应",
+    "example_en": "Beta-keto acids readily undergo decarboxylation upon mild heating.",
+    "example_zh": "β-酮酸在温和加热下极易发生脱羧反应。"
+  },
+  {
+    "category": "有机化学 - 官能团转化",
+    "word_en": "Halogenation",
+    "word_zh": "卤代反应",
+    "example_en": "Allylic halogenation can be achieved using N-bromosuccinimide and light.",
+    "example_zh": "烯丙位卤代可使用N-溴代丁二酰亚胺和光照来实现。"
+  },
+  {
+    "category": "有机化学 - 结构与构象",
+    "word_en": "Rotamer",
+    "word_zh": "旋转异构体",
+    "example_en": "Rotamers are conformational isomers interconverted by rotation about a single bond.",
+    "example_zh": "旋转异构体是通过绕单键旋转而相互转化的构象异构体。"
+  },
+  {
+    "category": "有机化学 - 结构与构象",
+    "word_en": "Atropisomer",
+    "word_zh": "阻转异构体",
+    "example_en": "BINAP is a classic example of an axially chiral molecule with separable atropisomers.",
+    "example_zh": "BINAP是具有可分离阻转异构体的轴手性分子的经典例子。"
+  },
+  {
+    "category": "有机化学 - 结构与构象",
+    "word_en": "Torsional strain",
+    "word_zh": "扭转张力",
+    "example_en": "Eclipsed conformations are destabilized by torsional strain.",
+    "example_zh": "重叠构象因扭转张力而不稳定。"
+  },
+  {
+    "category": "有机化学 - 结构与构象",
+    "word_en": "Steric strain",
+    "word_zh": "空间张力",
+    "example_en": "Bulky tert-butyl groups create severe steric strain when placed in close proximity.",
+    "example_zh": "庞大的叔丁基在非常接近时会产生严重的空阻张力。"
+  },
+  {
+    "category": "有机化学 - 结构与构象",
+    "word_en": "Ring strain",
+    "word_zh": "环张力",
+    "example_en": "Cyclopropane possesses high ring strain due to unfavorable bond angles.",
+    "example_zh": "由于不利的键角，环丙烷具有很高的环张力。"
+  },
+  {
+    "category": "有机化学 - 结构与构象",
+    "word_en": "Axial",
+    "word_zh": "直立键 (a键)",
+    "example_en": "Substituents in axial positions experience 1,3-diaxial interactions.",
+    "example_zh": "位于直立键位置的取代基会受到1,3-直立键相互作用。"
+  },
+  {
+    "category": "有机化学 - 结构与构象",
+    "word_en": "Equatorial",
+    "word_zh": "平伏键 (e键)",
+    "example_en": "Large substituents strongly prefer the equatorial position in cyclohexane rings.",
+    "example_zh": "大体积取代基极度倾向于处于环己烷环的平伏键位置。"
+  },
+  {
+    "category": "有机化学 - 结构与构象",
+    "word_en": "Gauche",
+    "word_zh": "邻位交叉",
+    "example_en": "The gauche conformation of butane has a dihedral angle of 60 degrees.",
+    "example_zh": "丁烷的邻位交叉构象具有60度的二面角。"
+  },
+  {
+    "category": "有机化学 - 结构与构象",
+    "word_en": "Anti",
+    "word_zh": "反叠",
+    "example_en": "The anti conformation is generally the global energy minimum for linear alkanes.",
+    "example_zh": "对于直链烷烃，反叠构象通常是全局能量最低点。"
+  },
+  {
+    "category": "有机化学 - 结构与构象",
+    "word_en": "Eclipsed",
+    "word_zh": "重叠",
+    "example_en": "The fully eclipsed conformation of butane represents a transition state.",
+    "example_zh": "丁烷的完全重叠构象代表一个过渡态。"
+  },
+  {
+    "category": "有机化学 - 试剂与溶剂",
+    "word_en": "Aprotic solvent",
+    "word_zh": "非质子溶剂",
+    "example_en": "Polar aprotic solvents like DMF accelerate SN2 reactions.",
+    "example_zh": "极性非质子溶剂如DMF加速SN2反应。"
+  },
+  {
+    "category": "有机化学 - 试剂与溶剂",
+    "word_en": "Protic solvent",
+    "word_zh": "质子溶剂",
+    "example_en": "Protic solvents can hydrogen bond with nucleophiles, decreasing their reactivity.",
+    "example_zh": "质子溶剂能与亲核试剂形成氢键，降低其反应活性。"
+  },
+  {
+    "category": "有机化学 - 试剂与溶剂",
+    "word_en": "Lewis acid",
+    "word_zh": "路易斯酸",
+    "example_en": "Aluminum chloride acts as a Lewis acid catalyst in Friedel-Crafts reactions.",
+    "example_zh": "氯化铝在傅-克反应中充当路易斯酸催化剂。"
+  },
+  {
+    "category": "有机化学 - 试剂与溶剂",
+    "word_en": "Lewis base",
+    "word_zh": "路易斯碱",
+    "example_en": "An amine acts as a Lewis base by donating its lone pair of electrons.",
+    "example_zh": "胺通过提供孤对电子来充当路易斯碱。"
+  },
+  {
+    "category": "有机化学 - 试剂与溶剂",
+    "word_en": "Brønsted acid",
+    "word_zh": "布朗斯特酸",
+    "example_en": "A Brønsted acid is defined as a proton donor.",
+    "example_zh": "布朗斯特酸被定义为质子提供者。"
+  },
+  {
+    "category": "有机化学 - 试剂与溶剂",
+    "word_en": "Organolithium",
+    "word_zh": "有机锂试剂",
+    "example_en": "Organolithium reagents are more reactive than corresponding Grignard reagents.",
+    "example_zh": "有机锂试剂比相应的格氏试剂更具反应性。"
+  },
+  {
+    "category": "有机化学 - 试剂与溶剂",
+    "word_en": "Borane",
+    "word_zh": "甲硼烷",
+    "example_en": "Borane exists as a dimer, diborane, but is typically used as a THF complex.",
+    "example_zh": "甲硼烷以二聚体乙硼烷的形式存在，但通常以THF配合物的形式使用。"
+  },
+  {
+    "category": "有机化学 - 试剂与溶剂",
+    "word_en": "Peroxy acid",
+    "word_zh": "过氧酸",
+    "example_en": "mCPBA is a commonly used peroxy acid for epoxidation.",
+    "example_zh": "mCPBA是常用于环氧化反应的过氧酸。"
+  },
+  {
+    "category": "有机化学 - 试剂与溶剂",
+    "word_en": "Diazomethane",
+    "word_zh": "重氮甲烷",
+    "example_en": "Diazomethane converts carboxylic acids into methyl esters efficiently.",
+    "example_zh": "重氮甲烷将羧酸高效转化为甲酯。"
+  },
+  {
+    "category": "有机化学 - 试剂与溶剂",
+    "word_en": "N-Bromosuccinimide",
+    "word_zh": "N-溴代丁二酰亚胺 (NBS)",
+    "example_en": "N-Bromosuccinimide provides a low, steady concentration of bromine for radical reactions.",
+    "example_zh": "N-溴代丁二酰亚胺为自由基反应提供低且稳定的溴浓度。"
+  },
+  {
+    "category": "有机化学 - 活性中间体",
+    "word_en": "Carbene",
+    "word_zh": "卡宾 (碳烯)",
+    "example_en": "Singlet and triplet carbenes exhibit different reactivities in cycloaddition reactions.",
+    "example_zh": "单线态和三线态卡宾在环加成反应中表现出不同的反应性。"
+  },
+  {
+    "category": "有机化学 - 活性中间体",
+    "word_en": "Nitrene",
+    "word_zh": "氮烯 (乃春)",
+    "example_en": "Nitrenes are highly reactive nitrogen analogues of carbenes.",
+    "example_zh": "氮烯是卡宾的高活性氮类似物。"
+  },
+  {
+    "category": "有机化学 - 活性中间体",
+    "word_en": "Benzyne",
+    "word_zh": "苯炔",
+    "example_en": "The benzyne intermediate can be trapped by a diene in a Diels-Alder reaction.",
+    "example_zh": "苯炔中间体可在狄尔斯-阿尔德反应中被双烯体捕获。"
+  },
+  {
+    "category": "有机化学 - 活性中间体",
+    "word_en": "Ylide",
+    "word_zh": "叶立德",
+    "example_en": "A phosphonium ylide contains a carbanion directly attached to a positively charged phosphorus atom.",
+    "example_zh": "鏻叶立德包含一个直接连接到带正电荷磷原子的碳负离子。"
+  },
+  {
+    "category": "有机化学 - 活性中间体",
+    "word_en": "Radical anion",
+    "word_zh": "自由基负离子",
+    "example_en": "Birch reduction proceeds via the formation of a radical anion intermediate.",
+    "example_zh": "伯奇还原反应通过形成自由基负离子中间体进行。"
+  },
+  {
+    "category": "有机化学 - 官能团类似物",
+    "word_en": "Acetal",
+    "word_zh": "缩醛",
+    "example_en": "Acetals are stable to bases but are readily hydrolyzed in acidic conditions.",
+    "example_zh": "缩醛对碱稳定，但在酸性条件下极易水解。"
+  },
+  {
+    "category": "有机化学 - 官能团类似物",
+    "word_en": "Ketal",
+    "word_zh": "缩酮",
+    "example_en": "Ethylene glycol is frequently used to convert ketones into cyclic ketals for protection.",
+    "example_zh": "乙二醇常用于将酮转化为环状缩酮以进行保护。"
+  },
+  {
+    "category": "有机化学 - 官能团类似物",
+    "word_en": "Imine",
+    "word_zh": "亚胺",
+    "example_en": "Condensation of a primary amine with an aldehyde yields an imine (Schiff base).",
+    "example_zh": "伯胺与醛缩合生成亚胺（席夫碱）。"
+  },
+  {
+    "category": "有机化学 - 官能团类似物",
+    "word_en": "Enamine",
+    "word_zh": "烯胺",
+    "example_en": "Enamines act as mild nucleophiles at the alpha-carbon.",
+    "example_zh": "烯胺在α-碳上充当温和的亲核试剂。"
+  },
+  {
+    "category": "有机化学 - 物理有机化学",
+    "word_en": "Kinetic isotope effect",
+    "word_zh": "动力学同位素效应 (KIE)",
+    "example_en": "A primary kinetic isotope effect indicates that C-H bond breaking is involved in the rate-determining step.",
+    "example_zh": "一级动力学同位素效应表明C-H键的断裂参与了决速步。"
+  },
+  {
+    "category": "有机化学 - 物理有机化学",
+    "word_en": "Hammett equation",
+    "word_zh": "哈米特方程",
+    "example_en": "The Hammett equation correlates reaction rates with substituent constants.",
+    "example_zh": "哈米特方程将反应速率与取代基常数关联起来。"
+  },
+  {
+    "category": "有机化学 - 物理有机化学",
+    "word_en": "Linear free-energy relationship",
+    "word_zh": "线性自由能关系 (LFER)",
+    "example_en": "LFERs provide quantitative insights into reaction mechanisms.",
+    "example_zh": "线性自由能关系为反应机理提供了定量的见解。"
+  },
+  {
+    "category": "有机化学 - 物理有机化学",
+    "word_en": "Reaction coordinate",
+    "word_zh": "反应坐标",
+    "example_en": "The potential energy surface is plotted against the reaction coordinate.",
+    "example_zh": "势能面是相对于反应坐标绘制的。"
+  },
+  {
+    "category": "有机化学 - 物理有机化学",
+    "word_en": "Hammond postulate",
+    "word_zh": "哈蒙德假说",
+    "example_en": "According to the Hammond postulate, the transition state resembles the species closest to it in energy.",
+    "example_zh": "根据哈蒙德假说，过渡态在结构上与能量最接近的物种相似。"
+  },
+  {
+    "category": "有机化学 - 物理有机化学",
+    "word_en": "Curtin-Hammett principle",
+    "word_zh": "柯廷-哈米特原则",
+    "example_en": "The Curtin-Hammett principle applies when conformers interconvert much faster than they react.",
+    "example_zh": "柯廷-哈米特原则适用于构象异构体相互转化的速度远快于其反应速度的情况。"
+  },
+  {
+    "category": "有机化学 - 高级立体化学",
+    "word_en": "Specific rotation",
+    "word_zh": "比旋光度",
+    "example_en": "Specific rotation is an intensive property used to identify chiral substances.",
+    "example_zh": "比旋光度是用于鉴定手性物质的一种强度性质。"
+  },
+  {
+    "category": "有机化学 - 高级立体化学",
+    "word_en": "Enantiomeric excess",
+    "word_zh": "对映体过量百分数 (ee)",
+    "example_en": "The asymmetric hydrogenation proceeded with 99% enantiomeric excess.",
+    "example_zh": "不对称氢化反应以99%的对映体过量百分数进行。"
+  },
+  {
+    "category": "有机化学 - 高级立体化学",
+    "word_en": "Kinetic resolution",
+    "word_zh": "动力学拆分",
+    "example_en": "Enzymes are often utilized for the kinetic resolution of racemic mixtures.",
+    "example_zh": "酶常被用于外消旋混合物的动力学拆分。"
+  },
+  {
+    "category": "有机化学 - 高级立体化学",
+    "word_en": "Dynamic kinetic resolution",
+    "word_zh": "动态动力学拆分 (DKR)",
+    "example_en": "Dynamic kinetic resolution allows for a theoretical maximum yield of 100% of a single enantiomer.",
+    "example_zh": "动态动力学拆分允许单一对映体的理论最大产率达到100%。"
+  },
+  {
+    "category": "有机化学 - 高级立体化学",
+    "word_en": "Desymmetrization",
+    "word_zh": "去对称化",
+    "example_en": "Enantioselective desymmetrization of a meso compound yields a chiral product.",
+    "example_zh": "内消旋化合物的对映选择性去对称化可生成手性产物。"
+  },
+  {
+    "category": "有机化学 - 高级不对称合成",
+    "word_en": "Chiral pool",
+    "word_zh": "手性源",
+    "example_en": "Amino acids and sugars are abundant starting materials in the chiral pool.",
+    "example_zh": "氨基酸和糖是手性源中丰富的起始原料。"
+  },
+  {
+    "category": "有机化学 - 高级不对称合成",
+    "word_en": "Chiral auxiliary",
+    "word_zh": "手性辅剂",
+    "example_en": "Evans oxazolidinones are classic chiral auxiliaries used in aldol reactions.",
+    "example_zh": "埃文斯噁唑烷酮是羟醛反应中使用的经典手性辅剂。"
+  },
+  {
+    "category": "有机化学 - 高级不对称合成",
+    "word_en": "Asymmetric synthesis",
+    "word_zh": "不对称合成",
+    "example_en": "The goal of asymmetric synthesis is the preferential formation of one stereoisomer.",
+    "example_zh": "不对称合成的目标是优先形成一种立体异构体。"
+  },
+  {
+    "category": "有机化学 - 特殊溶剂与催化剂",
+    "word_en": "Crown ether",
+    "word_zh": "冠醚",
+    "example_en": "Crown ethers strongly complex metal cations, enhancing the nucleophilicity of the counter anion.",
+    "example_zh": "冠醚与金属阳离子强烈络合，增强了抗衡阴离子的亲核性。"
+  },
+  {
+    "category": "有机化学 - 特殊溶剂与催化剂",
+    "word_en": "Phase-transfer catalyst",
+    "word_zh": "相转移催化剂 (PTC)",
+    "example_en": "Tetrabutylammonium bromide acts as a phase-transfer catalyst in biphasic reactions.",
+    "example_zh": "四丁基溴化铵在双相反应中充当相转移催化剂。"
+  },
+  {
+    "category": "有机化学 - 超分子化学",
+    "word_en": "Supramolecular chemistry",
+    "word_zh": "超分子化学",
+    "example_en": "Supramolecular chemistry studies intermolecular interactions beyond covalent bonding.",
+    "example_zh": "超分子化学研究共价键以外的分子间相互作用。"
+  },
+  {
+    "category": "有机化学 - 超分子化学",
+    "word_en": "Host-guest chemistry",
+    "word_zh": "主客体化学",
+    "example_en": "Cyclodextrins are widely studied in host-guest chemistry for drug delivery.",
+    "example_zh": "环糊精在用于药物递送的主客体化学中得到了广泛研究。"
+  },
+  {
+    "category": "有机化学 - 超分子化学",
+    "word_en": "Self-assembly",
+    "word_zh": "自组装",
+    "example_en": "The spontaneous self-assembly of molecules forms ordered macroscopic structures.",
+    "example_zh": "分子的自发自组装形成了有序的宏观结构。"
+  },
+  {
+    "category": "有机化学 - 超分子化学",
+    "word_en": "Macrocycle",
+    "word_zh": "大环化合物",
+    "example_en": "Porphyrins are naturally occurring macrocycles that bind metal ions.",
+    "example_zh": "卟啉是结合金属离子的天然大环化合物。"
+  },
+  {
+    "category": "有机化学 - 新型合成策略",
+    "word_en": "Click chemistry",
+    "word_zh": "点击化学",
+    "example_en": "Click chemistry reactions are characterized by high yield, rapid kinetics, and high thermodynamic driving force.",
+    "example_zh": "点击化学反应的特点是高产率、快速动力学和高热力学驱动力。"
+  },
+  {
+    "category": "有机化学 - 新型合成策略",
+    "word_en": "Solid-phase synthesis",
+    "word_zh": "固相合成",
+    "example_en": "Solid-phase synthesis allows for rapid purification by simple filtration.",
+    "example_zh": "固相合成允许通过简单的过滤进行快速纯化。"
+  },
+  {
+    "category": "有机化学 - 新型合成策略",
+    "word_en": "Combinatorial chemistry",
+    "word_zh": "组合化学",
+    "example_en": "Combinatorial chemistry rapidly generates large libraries of structurally related compounds.",
+    "example_zh": "组合化学可快速生成大量结构相关化合物的化合物库。"
+  },
+  {
+    "category": "有机化学 - 药物化学基础",
+    "word_en": "Pharmacophore",
+    "word_zh": "药效团",
+    "example_en": "A pharmacophore is the minimum structural framework required for biological activity.",
+    "example_zh": "药效团是生物活性所需的最小结构骨架。"
+  },
+  {
+    "category": "有机化学 - 药物化学基础",
+    "word_en": "Bioisostere",
+    "word_zh": "生物电子等排体",
+    "example_en": "Replacing a carboxylic acid with a tetrazole is a common bioisostere strategy to improve bioavailability.",
+    "example_zh": "用四唑替代羧酸是提高生物利用度的一种常见生物电子等排体策略。"
+  },
+  {
+    "category": "有机化学 - 药物化学基础",
+    "word_en": "Prodrug",
+    "word_zh": "前药",
+    "example_en": "A prodrug is metabolized in vivo into the active pharmacological agent.",
+    "example_zh": "前药在体内代谢成具有药理活性的药物。"
+  },
+  {
+    "category": "有机化学 - 药物化学基础",
+    "word_en": "Agonist",
+    "word_zh": "激动剂",
+    "example_en": "An agonist binds to a receptor and produces a biological response.",
+    "example_zh": "激动剂与受体结合并产生生物学反应。"
+  },
+  {
+    "category": "有机化学 - 药物化学基础",
+    "word_en": "Antagonist",
+    "word_zh": "拮抗剂",
+    "example_en": "An antagonist blocks the receptor and prevents the action of the endogenous ligand.",
+    "example_zh": "拮抗剂阻断受体并阻止内源性配体的作用。"
+  },
+  {
+    "category": "有机化学 - 生物合成",
+    "word_en": "Biosynthesis",
+    "word_zh": "生物合成",
+    "example_en": "Biosynthesis of complex natural products occurs via specific enzymatic pathways.",
+    "example_zh": "复杂天然产物的生物合成通过特定的酶促途径发生。"
+  },
+  {
+    "category": "有机化学 - 反应条件",
+    "word_en": "Photoredox",
+    "word_zh": "光氧化还原",
+    "example_en": "Visible-light photoredox catalysis has revolutionized free radical chemistry.",
+    "example_zh": "可见光光氧化还原催化彻底改变了自由基化学。"
+  },
+  {
+    "category": "有机化学 - 反应条件",
+    "word_en": "Microwave irradiation",
+    "word_zh": "微波辐射",
+    "example_en": "Microwave irradiation can drastically reduce reaction times compared to conventional heating.",
+    "example_zh": "与传统加热相比，微波辐射可以大幅缩短反应时间。"
+  },
+  {
+    "category": "有机化学 - 分离与纯化",
+    "word_en": "Chromatography",
+    "word_zh": "色谱法",
+    "example_en": "Flash column chromatography is routinely used to separate complex organic mixtures.",
+    "example_zh": "快速柱色谱常用于分离复杂的有机混合物。"
+  },
+  {
+    "category": "有机化学 - 分离与纯化",
+    "word_en": "Eluent",
+    "word_zh": "洗脱剂",
+    "example_en": "A gradient eluent system improves the separation of compounds with different polarities.",
+    "example_zh": "梯度洗脱系统可改善不同极性化合物的分离效果。"
+  },
+  {
+    "category": "有机化学 - 分离与纯化",
+    "word_en": "Retention time",
+    "word_zh": "保留时间",
+    "example_en": "The retention time in HPLC is characteristic of a specific compound under defined conditions.",
+    "example_zh": "在HPLC中，保留时间是特定化合物在规定条件下的特征。"
+  },
+  {
+    "category": "有机化学 - 分离与纯化",
+    "word_en": "Extraction",
+    "word_zh": "萃取",
+    "example_en": "Liquid-liquid extraction relies on the differential solubility of a compound in two immiscible phases.",
+    "example_zh": "液液萃取依赖于化合物在两个互不相溶的相中溶解度的差异。"
+  },
+  {
+    "category": "有机化学 - 分离与纯化",
+    "word_en": "Emulsion",
+    "word_zh": "乳浊液 (乳化现象)",
+    "example_en": "Adding brine to the separatory funnel can help break up a stubborn emulsion.",
+    "example_zh": "向分液漏斗中加入盐水有助于破坏顽固的乳化现象。"
+  },
+  {
+    "category": "有机化学 - 分离与纯化",
+    "word_en": "Desiccant",
+    "word_zh": "干燥剂",
+    "example_en": "Anhydrous magnesium sulfate is an excellent desiccant for drying organic extracts.",
+    "example_zh": "无水硫酸镁是用于干燥有机提取物的优良干燥剂。"
+  },
+  {
+    "category": "有机化学 - 化合物类别",
+    "word_en": "Lactone",
+    "word_zh": "内酯",
+    "example_en": "A lactone is a cyclic ester formed by intramolecular esterification.",
+    "example_zh": "内酯是由分子内酯化形成的环状酯。"
+  },
+  {
+    "category": "有机化学 - 化合物类别",
+    "word_en": "Lactam",
+    "word_zh": "内酰胺",
+    "example_en": "Penicillin antibiotics contain a highly strained beta-lactam ring.",
+    "example_zh": "青霉素类抗生素含有一个高张力的β-内酰胺环。"
+  },
+  {
+    "category": "有机化学 - 化合物类别",
+    "word_en": "Anhydride",
+    "word_zh": "酸酐",
+    "example_en": "Acetic anhydride is widely used for the acetylation of alcohols and amines.",
+    "example_zh": "乙酸酐广泛用于醇和胺的乙酰化反应。"
+  },
+  {
+    "category": "有机化学 - 化合物类别",
+    "word_en": "Imide",
+    "word_zh": "酰亚胺",
+    "example_en": "Phthalimide is used as a nitrogen source in the Gabriel synthesis of primary amines.",
+    "example_zh": "邻苯二甲酰亚胺在合成伯胺的加布里埃尔反应中用作氮源。"
+  },
+  {
+    "category": "有机化学 - 化合物类别",
+    "word_en": "Ketene",
+    "word_zh": "烯酮",
+    "example_en": "Ketenes are highly reactive intermediates that readily undergo [2+2] cycloadditions.",
+    "example_zh": "烯酮是极具反应性的中间体，很容易发生[2+2]环加成反应。"
+  },
+  {
+    "category": "有机化学 - 化合物类别",
+    "word_en": "Allene",
+    "word_zh": "丙二烯",
+    "example_en": "Substituted allenes can be chiral even if they lack a traditional stereocenter.",
+    "example_zh": "即使缺乏传统的立体中心，取代的丙二烯也可以具有手性。"
+  },
+  {
+    "category": "有机化学 - 化合物类别",
+    "word_en": "Peroxide",
+    "word_zh": "过氧化物",
+    "example_en": "Organic peroxides are sensitive to heat and can act as radical initiators.",
+    "example_zh": "有机过氧化物对热敏感，可作为自由基引发剂。"
+  },
+  {
+    "category": "有机化学 - 机理研究",
+    "word_en": "Neighboring group participation",
+    "word_zh": "邻基参与效应",
+    "example_en": "Neighboring group participation provides anchimeric assistance and retains the stereochemistry.",
+    "example_zh": "邻基参与效应提供邻基促进作用并保持立体化学构型。"
+  },
+  {
+    "category": "有机化学 - 机理研究",
+    "word_en": "Isotope labeling",
+    "word_zh": "同位素标记",
+    "example_en": "Isotope labeling experiments traced the oxygen atom source to the solvent rather than the reagent.",
+    "example_zh": "同位素标记实验将氧原子的来源追踪到了溶剂而不是试剂。"
+  },
+  {
+    "category": "有机化学 - 机理研究",
+    "word_en": "Crossover experiment",
+    "word_zh": "交叉实验",
+    "example_en": "A crossover experiment was designed to determine if the rearrangement is intermolecular or intramolecular.",
+    "example_zh": "设计交叉实验以确定重排是分子间还是分子内发生的。"
+  },
+  {
+    "category": "有机化学 - 机理研究",
+    "word_en": "Trapping",
+    "word_zh": "捕获 (拦截)",
+    "example_en": "The short-lived intermediate was identified by trapping it with a diene.",
+    "example_zh": "通过用双烯体捕获，鉴定出了这个短寿命的中间体。"
+  },
+  {
+    "category": "有机化学 - 波谱分析进阶",
+    "word_en": "Anisotropy",
+    "word_zh": "各向异性效应",
+    "example_en": "Magnetic anisotropy of the aromatic ring causes significant downfield shifts of nearby protons.",
+    "example_zh": "芳环的磁各向异性效应导致附近质子的显著低场位移。"
+  },
+  {
+    "category": "有机化学 - 波谱分析进阶",
+    "word_en": "Relaxation",
+    "word_zh": "弛豫",
+    "example_en": "Spin-lattice relaxation time (T1) is crucial for accurate quantitative NMR integration.",
+    "example_zh": "自旋-晶格弛豫时间(T1)对于准确的定量NMR积分至关重要。"
+  },
+  {
+    "category": "有机化学 - 波谱分析进阶",
+    "word_en": "NOESY",
+    "word_zh": "核奥佛豪塞效应谱",
+    "example_en": "NOESY experiments elucidate spatial proximity between protons within a molecule.",
+    "example_zh": "NOESY实验阐明了分子内质子之间的空间接近程度。"
+  },
+  {
+    "category": "有机化学 - 波谱分析进阶",
+    "word_en": "COSY",
+    "word_zh": "化学位移相关谱",
+    "example_en": "COSY reveals the scalar coupling connectivity of adjacent spin systems.",
+    "example_zh": "COSY揭示了相邻自旋系统的标量偶合连通性。"
+  },
+  {
+    "category": "有机化学 - 波谱分析进阶",
+    "word_en": "Electrospray ionization (ESI)",
+    "word_zh": "电喷雾电离",
+    "example_en": "ESI is a soft ionization technique ideal for analyzing large bio-organic molecules.",
+    "example_zh": "ESI是一种软电离技术，非常适合分析大型生物有机分子。"
+  },
+  {
+    "category": "有机化学 - 波谱分析进阶",
+    "word_en": "MALDI",
+    "word_zh": "基质辅助激光解吸电离",
+    "example_en": "MALDI mass spectrometry requires co-crystallization of the analyte with an energy-absorbing matrix.",
+    "example_zh": "MALDI质谱要求分析物与吸收能量的基质共结晶。"
+  },
+  {
+    "category": "有机化学 - 合成反应",
+    "word_en": "Reductive amination",
+    "word_zh": "还原胺化反应",
+    "example_en": "Reductive amination of aldehydes with sodium cyanoborohydride gives secondary or tertiary amines.",
+    "example_zh": "使用氰基硼氢化钠还原胺化醛可得到仲胺或叔胺。"
+  },
+  {
+    "category": "有机化学 - 合成反应",
+    "word_en": "Hydroformylation",
+    "word_zh": "氢甲酰化反应",
+    "example_en": "Hydroformylation converts alkenes into aldehydes using synthesis gas and a metal catalyst.",
+    "example_zh": "氢甲酰化反应使用合成气和金属催化剂将烯烃转化为醛。"
+  },
+  {
+    "category": "有机化学 - 合成反应",
+    "word_en": "Carbonylation",
+    "word_zh": "羰基化反应",
+    "example_en": "Palladium-catalyzed carbonylation inserts a carbonyl group into an aryl-halogen bond.",
+    "example_zh": "钯催化的羰基化反应将羰基插入到芳基-卤素键中。"
+  },
+  {
+    "category": "有机化学 - 金属有机机理",
+    "word_en": "Beta-hydride elimination",
+    "word_zh": "β-氢消除反应",
+    "example_en": "Beta-hydride elimination is a common decomposition pathway for transition metal alkyl complexes.",
+    "example_zh": "β-氢消除反应是过渡金属烷基配合物常见的分解途径。"
+  },
+  {
+    "category": "有机化学 - 金属有机机理",
+    "word_en": "Migratory insertion",
+    "word_zh": "迁移插入",
+    "example_en": "Migratory insertion of carbon monoxide is a key step in polymer synthesis.",
+    "example_zh": "一氧化碳的迁移插入是聚合物合成中的关键步骤。"
+  },
+  {
+    "category": "有机化学 - 金属有机机理",
+    "word_en": "Oxidative cleavage",
+    "word_zh": "氧化裂解",
+    "example_en": "Ruthenium tetroxide is a vigorous reagent for the oxidative cleavage of double bonds.",
+    "example_zh": "四氧化钌是用于双键氧化裂解的剧烈试剂。"
+  },
+  {
+    "category": "有机化学 - 合成反应",
+    "word_en": "Olefination",
+    "word_zh": "烯烃化反应",
+    "example_en": "The Horner-Wadsworth-Emmons olefination selectively produces E-alkenes.",
+    "example_zh": "Horner-Wadsworth-Emmons烯烃化反应选择性地生成E型烯烃。"
+  },
+  {
+    "category": "有机化学 - 合成反应",
+    "word_en": "Ring-closing metathesis",
+    "word_zh": "关环复分解反应 (RCM)",
+    "example_en": "Grubbs' catalyst is highly effective for synthesizing macrocycles via ring-closing metathesis.",
+    "example_zh": "格拉布催化剂在通过关环复分解反应合成大环化合物方面极为有效。"
+  },
+  {
+    "category": "有机化学 - 高分子",
+    "word_en": "Ring-opening polymerization",
+    "word_zh": "开环聚合反应 (ROP)",
+    "example_en": "Polylactic acid is manufactured globally by the ring-opening polymerization of lactide.",
+    "example_zh": "聚乳酸在全球范围内通过丙交酯的开环聚合反应进行生产。"
+  },
+  {
+    "category": "有机化学 - 命名反应",
+    "word_en": "Stille coupling",
+    "word_zh": "斯蒂尔偶联反应",
+    "example_en": "Stille coupling utilizes organotin reagents, which are highly versatile but toxic.",
+    "example_zh": "斯蒂尔偶联反应利用有机锡试剂，该试剂通用性强但有毒。"
+  },
+  {
+    "category": "有机化学 - 命名反应",
+    "word_en": "Negishi coupling",
+    "word_zh": "根岸偶联反应",
+    "example_en": "The Negishi coupling forms C-C bonds using organozinc compounds, tolerating various functional groups.",
+    "example_zh": "根岸偶联反应使用有机锌化合物形成碳碳键，对多种官能团有较好的耐受性。"
+  },
+  {
+    "category": "有机化学 - 命名反应",
+    "word_en": "Buchwald-Hartwig amination",
+    "word_zh": "布赫瓦尔德-哈特维希胺化反应",
+    "example_en": "This amination protocol revolutionized the industrial synthesis of arylamines.",
+    "example_zh": "该胺化方案彻底改变了芳香胺的工业合成。"
+  },
+  {
+    "category": "有机化学 - 点击化学",
+    "word_en": "Azide-alkyne cycloaddition",
+    "word_zh": "叠氮-炔环加成反应",
+    "example_en": "The copper-catalyzed azide-alkyne cycloaddition yields exclusively the 1,4-disubstituted triazole.",
+    "example_zh": "铜催化的叠氮-炔环加成反应唯一生成1,4-二取代的三唑。"
+  },
+  {
+    "category": "有机化学 - 多组分反应",
+    "word_en": "Ugi reaction",
+    "word_zh": "乌吉反应",
+    "example_en": "The Ugi reaction is a classic four-component reaction producing a bis-amide.",
+    "example_zh": "乌吉反应是生成双酰胺的经典四组分反应。"
+  },
+  {
+    "category": "有机化学 - 多组分反应",
+    "word_en": "Passerini reaction",
+    "word_zh": "帕塞里尼反应",
+    "example_en": "The Passerini reaction converges an isocyanide, an aldehyde, and a carboxylic acid into an alpha-acyloxy amide.",
+    "example_zh": "帕塞里尼反应将异腈、醛和羧酸汇聚成α-酰氧基酰胺。"
+  },
+  {
+    "category": "有机化学 - 多组分反应",
+    "word_en": "Multicomponent reaction",
+    "word_zh": "多组分反应 (MCR)",
+    "example_en": "Multicomponent reactions maximize atom economy by combining three or more starting materials in a single step.",
+    "example_zh": "多组分反应通过在单步中结合三种或更多起始原料来最大化原子经济性。"
+  },
+  {
+    "category": "有机化学 - 结构性质",
+    "word_en": "Atom economy",
+    "word_zh": "原子经济性",
+    "example_en": "High atom economy implies that most of the reactant atoms are incorporated into the desired product.",
+    "example_zh": "高原子经济性意味着大多数反应物原子被结合到目标产物中。"
+  },
+  {
+    "category": "有机化学 - 绿色与可持续",
+    "word_en": "Green chemistry",
+    "word_zh": "绿色化学",
+    "example_en": "Green chemistry aims to design products and processes that minimize the use of hazardous substances.",
+    "example_zh": "绿色化学旨在设计能最大限度减少有害物质使用的产品和工艺。"
+  },
+  {
+    "category": "有机化学 - 绿色与可持续",
+    "word_en": "Solvent-free",
+    "word_zh": "无溶剂的",
+    "example_en": "Solvent-free reactions reduce chemical waste and often proceed with higher reaction rates.",
+    "example_zh": "无溶剂反应减少了化学废弃物，并且通常具有更高的反应速率。"
+  },
+  {
+    "category": "有机化学 - 绿色与可持续",
+    "word_en": "Ionic liquid",
+    "word_zh": "离子液体",
+    "example_en": "Room-temperature ionic liquids are considered environmentally benign alternative solvents.",
+    "example_zh": "室温离子液体被认为是环境友好的替代溶剂。"
+  },
+  {
+    "category": "有机化学 - 绿色与可持续",
+    "word_en": "Biomass",
+    "word_zh": "生物质",
+    "example_en": "Conversion of lignocellulosic biomass into platform chemicals is a key goal in sustainable synthesis.",
+    "example_zh": "将木质纤维素生物质转化为平台化学品是可持续合成的一个关键目标。"
+  },
+  {
+    "category": "有机化学 - 氟化学",
+    "word_en": "Organofluorine",
+    "word_zh": "有机氟化物",
+    "example_en": "Incorporating fluorine into an organic molecule dramatically alters its lipophilicity and metabolic stability.",
+    "example_zh": "将氟引入有机分子会显著改变其脂溶性和代谢稳定性。"
+  },
+  {
+    "category": "有机化学 - 生物缀合物",
+    "word_en": "Peptidomimetic",
+    "word_zh": "拟肽",
+    "example_en": "A peptidomimetic is designed to mimic a peptide while overcoming its poor oral bioavailability.",
+    "example_zh": "拟肽被设计用于模仿多肽，同时克服其口服生物利用度差的问题。"
+  },
+  {
+    "category": "有机化学 - 生物缀合物",
+    "word_en": "Oligonucleotide",
+    "word_zh": "寡核苷酸",
+    "example_en": "Solid-phase phosphoramidite chemistry is the standard method for oligonucleotide synthesis.",
+    "example_zh": "固相亚磷酰胺化学是合成寡核苷酸的标准方法。"
+  },
+  {
+    "category": "有机化学 - 生物缀合物",
+    "word_en": "Glycoconjugate",
+    "word_zh": "糖缀合物",
+    "example_en": "Glycoconjugates play critical roles in cell-cell recognition and immune responses.",
+    "example_zh": "糖缀合物在细胞间识别和免疫反应中起着至关重要的作用。"
+  },
+  {
+    "category": "有机化学 - 光物理",
+    "word_en": "Fluorophore",
+    "word_zh": "荧光团",
+    "example_en": "The synthetic fluorophore was attached to the antibody for biological imaging.",
+    "example_zh": "合成的荧光团被连接到抗体上用于生物成像。"
+  },
+  {
+    "category": "有机化学 - 光物理",
+    "word_en": "Chromophore",
+    "word_zh": "发色团",
+    "example_en": "The extended conjugated system acts as a chromophore, absorbing visible light.",
+    "example_zh": "扩展的共轭系统充当发色团，吸收可见光。"
+  },
+  {
+    "category": "有机化学 - 光物理",
+    "word_en": "Bathochromic shift",
+    "word_zh": "红移 (向长波方向移动)",
+    "example_en": "Increasing the solvent polarity caused a bathochromic shift in the absorption spectrum.",
+    "example_zh": "增加溶剂极性导致吸收光谱发生红移。"
+  },
+  {
+    "category": "有机化学 - 光物理",
+    "word_en": "Hypsochromic shift",
+    "word_zh": "蓝移 (向短波方向移动)",
+    "example_en": "Loss of coplanarity in the biphenyl system results in a hypsochromic shift.",
+    "example_zh": "联苯系统失去共平面性会导致蓝移。"
+  },
+  {
+    "category": "有机化学 - 前沿合成技术",
+    "word_en": "Mechanochemistry",
+    "word_zh": "机械化学",
+    "example_en": "Mechanochemistry utilizes mechanical milling to induce chemical transformations without solvents.",
+    "example_zh": "机械化学利用机械球磨在无溶剂的情况下引发化学转化。"
+  },
+  {
+    "category": "有机化学 - 前沿合成技术",
+    "word_en": "Flow chemistry",
+    "word_zh": "流动化学",
+    "example_en": "Continuous flow chemistry offers enhanced heat and mass transfer compared to batch reactors.",
+    "example_zh": "与间歇式反应器相比，连续流动化学提供了增强的传热和传质效果。"
+  },
+  {
+    "category": "有机化学 - 前沿材料",
+    "word_en": "Dendrimer",
+    "word_zh": "树状大分子",
+    "example_en": "Dendrimers are highly branched, monodisperse macromolecules with precise architectures.",
+    "example_zh": "树状大分子是具有精确结构的高度支化、单分散的大分子。"
+  },
+  {
+    "category": "有机化学 - 前沿材料",
+    "word_en": "MOF",
+    "word_zh": "金属有机框架",
+    "example_en": "Metal-organic frameworks exhibit exceptionally high surface areas for gas storage.",
+    "example_zh": "金属有机框架在气体储存方面表现出极高的表面积。"
+  },
+  {
+    "category": "有机化学 - 前沿材料",
+    "word_en": "COF",
+    "word_zh": "共价有机框架",
+    "example_en": "Covalent organic frameworks are porous crystalline polymers linked by strong covalent bonds.",
+    "example_zh": "共价有机框架是由强共价键连接的多孔结晶聚合物。"
+  },
+  {
+    "category": "有机化学 - 超分子与拓扑",
+    "word_en": "Catenane",
+    "word_zh": "索烃",
+    "example_en": "A catenane consists of two or more interlocked macrocyclic rings.",
+    "example_zh": "索烃由两个或多个互锁的大环组成。"
+  },
+  {
+    "category": "有机化学 - 超分子与拓扑",
+    "word_en": "Rotaxane",
+    "word_zh": "轮烷",
+    "example_en": "The bulky stopper groups prevent the macrocycle from slipping off the rotaxane axle.",
+    "example_zh": "庞大的封端基团可防止大环从轮烷的轴上滑落。"
+  },
+  {
+    "category": "有机化学 - 超分子与拓扑",
+    "word_en": "Cryptand",
+    "word_zh": "穴醚",
+    "example_en": "Cryptands encapsulate metal cations more strongly and selectively than crown ethers.",
+    "example_zh": "穴醚比冠醚更强、更具选择性地包裹金属阳离子。"
+  },
+  {
+    "category": "有机化学 - 超分子与拓扑",
+    "word_en": "Ionophore",
+    "word_zh": "离子载体",
+    "example_en": "The naturally occurring ionophore selectively transports potassium ions across the lipid bilayer.",
+    "example_zh": "天然存在的离子载体选择性地将钾离子转运穿过脂质双分子层。"
+  },
+  {
+    "category": "有机化学 - 物理化学性质",
+    "word_en": "Isosteric",
+    "word_zh": "等排的",
+    "example_en": "Carbon monoxide and nitrogen are isosteric molecules with similar physical properties.",
+    "example_zh": "一氧化碳和氮气是具有相似物理性质的等排分子。"
+  },
+  {
+    "category": "有机化学 - 胶体与表面",
+    "word_en": "Amphiphilic",
+    "word_zh": "两亲性的",
+    "example_en": "Surfactants are amphiphilic molecules possessing both hydrophilic and lipophilic parts.",
+    "example_zh": "表面活性剂是同时具有亲水和亲脂部分的两亲性分子。"
+  },
+  {
+    "category": "有机化学 - 胶体与表面",
+    "word_en": "Micelle",
+    "word_zh": "胶束",
+    "example_en": "Above the critical micelle concentration, surfactant molecules aggregate into micelles.",
+    "example_zh": "在临界胶束浓度之上，表面活性剂分子聚集成胶束。"
+  },
+  {
+    "category": "有机化学 - 胶体与表面",
+    "word_en": "Liposome",
+    "word_zh": "脂质体",
+    "example_en": "Liposomes are artificial spherical vesicles used as vehicles for administration of drugs.",
+    "example_zh": "脂质体是人造的球形囊泡，用作药物递送的载体。"
+  },
+  {
+    "category": "有机化学 - 高分子化学",
+    "word_en": "Monomer",
+    "word_zh": "单体",
+    "example_en": "Styrene is the primary monomer used in the production of polystyrene.",
+    "example_zh": "苯乙烯是生产聚苯乙烯所用的主要单体。"
+  },
+  {
+    "category": "有机化学 - 高分子化学",
+    "word_en": "Oligomer",
+    "word_zh": "低聚物 (寡聚物)",
+    "example_en": "An oligomer consists of a few repeating units, unlike a high molecular weight polymer.",
+    "example_zh": "与高分子量聚合物不同，低聚物由少量重复单元组成。"
+  },
+  {
+    "category": "有机化学 - 高分子化学",
+    "word_en": "Copolymer",
+    "word_zh": "共聚物",
+    "example_en": "Block copolymers spontaneously microphase separate to form well-defined nanostructures.",
+    "example_zh": "嵌段共聚物自发进行微相分离，形成明确的纳米结构。"
+  },
+  {
+    "category": "有机化学 - 高分子化学",
+    "word_en": "Cross-linking",
+    "word_zh": "交联",
+    "example_en": "Extensive cross-linking turns a linear polymer into an insoluble, infusible 3D network.",
+    "example_zh": "广泛的交联将线型聚合物转变为不溶、不熔的3D网络。"
+  },
+  {
+    "category": "有机化学 - 高分子化学",
+    "word_en": "Radical initiator",
+    "word_zh": "自由基引发剂",
+    "example_en": "AIBN is a common radical initiator that decomposes thermally to generate nitrogen gas.",
+    "example_zh": "AIBN是一种常见的自由基引发剂，热分解产生氮气。"
+  },
+  {
+    "category": "有机化学 - 高分子化学",
+    "word_en": "Chain transfer",
+    "word_zh": "链转移",
+    "example_en": "Adding a thiol effectively regulates the molecular weight via a chain transfer mechanism.",
+    "example_zh": "添加硫醇通过链转移机制有效地调节了分子量。"
+  },
+  {
+    "category": "有机化学 - 高分子化学",
+    "word_en": "Living polymerization",
+    "word_zh": "活性聚合",
+    "example_en": "Living polymerization proceeds without spontaneous chain termination or transfer reactions.",
+    "example_zh": "活性聚合在没有自发链终止或转移反应的情况下进行。"
+  },
+  {
+    "category": "有机化学 - 高分子催化",
+    "word_en": "Ziegler-Natta catalyst",
+    "word_zh": "齐格勒-纳塔催化剂",
+    "example_en": "Ziegler-Natta catalysts are essential for the industrial stereoselective polymerization of alpha-olefins.",
+    "example_zh": "齐格勒-纳塔催化剂对于α-烯烃的工业化立体选择性聚合至关重要。"
+  },
+  {
+    "category": "有机化学 - 高分子材料",
+    "word_en": "Vulcanization",
+    "word_zh": "硫化",
+    "example_en": "Vulcanization hardens natural rubber by introducing sulfur cross-links between polymer chains.",
+    "example_zh": "硫化通过在聚合物链之间引入硫交联来硬化天然橡胶。"
+  },
+  {
+    "category": "有机化学 - 高分子材料",
+    "word_en": "Plasticizer",
+    "word_zh": "增塑剂",
+    "example_en": "Phthalates are widely added as plasticizers to make PVC more flexible.",
+    "example_zh": "邻苯二甲酸酯被广泛添加作为增塑剂以使PVC更具柔韧性。"
+  },
+  {
+    "category": "有机化学 - 高级合成策略",
+    "word_en": "Photolabile",
+    "word_zh": "光不稳定的 (光敏的)",
+    "example_en": "The photolabile protecting group was smoothly removed by UV irradiation at 350 nm.",
+    "example_zh": "光不稳定保护基通过350 nm的紫外线照射被顺利脱除。"
+  },
+  {
+    "category": "有机化学 - 高级合成策略",
+    "word_en": "Orthogonal protection",
+    "word_zh": "正交保护",
+    "example_en": "Orthogonal protection allows for the selective deprotection of one group without affecting the others.",
+    "example_zh": "正交保护允许在不影响其他基团的情况下选择性地脱除一个保护基。"
+  },
+  {
+    "category": "有机化学 - 高级合成策略",
+    "word_en": "Scavenger",
+    "word_zh": "清除剂",
+    "example_en": "A solid-supported scavenger resin was added to remove excess unreacted starting material.",
+    "example_zh": "加入固相载体清除树脂以去除过量未反应的起始原料。"
+  },
+  {
+    "category": "有机化学 - 高级合成策略",
+    "word_en": "Derivatization",
+    "word_zh": "衍生化",
+    "example_en": "Chemical derivatization was required to make the analyte volatile enough for GC-MS analysis.",
+    "example_zh": "需要进行化学衍生化以使分析物具有足够的挥发性，从而进行GC-MS分析。"
+  },
+  {
+    "category": "有机化学 - 高级合成策略",
+    "word_en": "Traceless linker",
+    "word_zh": "无痕连接体",
+    "example_en": "Cleavage of the traceless linker from the solid support leaves no residual functional group on the target molecule.",
+    "example_zh": "从固相载体上裂解无痕连接体后，目标分子上不会留下残留的官能团。"
+  },
+  {
+    "category": "有机化学 - 实验设备",
+    "word_en": "Glovebox",
+    "word_zh": "手套箱",
+    "example_en": "Air- and moisture-sensitive reagents must be handled inside a glovebox.",
+    "example_zh": "对空气和水分敏感的试剂必须在手套箱内进行操作。"
+  },
+  {
+    "category": "有机化学 - 实验设备",
+    "word_en": "Schlenk line",
+    "word_zh": "双排管 (施伦克线)",
+    "example_en": "The Schlenk line allows for operations under an inert atmosphere.",
+    "example_zh": "双排管允许在惰性气体氛围下进行操作。"
+  },
+  {
+    "category": "有机化学 - 实验设备",
+    "word_en": "Cannula",
+    "word_zh": "导管 / 转移管",
+    "example_en": "The organolithium reagent was transferred dropwise via a double-ended cannula.",
+    "example_zh": "有机锂试剂通过双头导管逐滴转移。"
+  },
+  {
+    "category": "有机化学 - 实验设备",
+    "word_en": "Septum",
+    "word_zh": "橡胶隔垫",
+    "example_en": "The reaction flask was sealed with a rubber septum and purged with nitrogen.",
+    "example_zh": "反应瓶用橡胶隔垫密封并用氮气置换。"
+  },
+  {
+    "category": "有机化学 - 实验设备",
+    "word_en": "Rotary evaporator",
+    "word_zh": "旋转蒸发仪",
+    "example_en": "The solvent was removed under reduced pressure using a rotary evaporator.",
+    "example_zh": "使用旋转蒸发仪在减压下除去溶剂。"
+  },
+  {
+    "category": "有机化学 - 实验操作",
+    "word_en": "Lyophilization",
+    "word_zh": "冷冻干燥",
+    "example_en": "The aqueous sample was purified and then subjected to lyophilization.",
+    "example_zh": "水相样品经纯化后进行冷冻干燥。"
+  },
+  {
+    "category": "有机化学 - 实验操作",
+    "word_en": "Sublimation",
+    "word_zh": "升华",
+    "example_en": "Sublimation is an effective technique for purifying volatile solid compounds.",
+    "example_zh": "升华是提纯挥发性固体化合物的有效技术。"
+  },
+  {
+    "category": "有机化学 - 实验操作",
+    "word_en": "Trituration",
+    "word_zh": "打浆 / 研磨洗涤",
+    "example_en": "Trituration of the crude solid with cold ether removed most of the impurities.",
+    "example_zh": "用冷乙醚对粗品固体进行打浆洗涤去除了大部分杂质。"
+  },
+  {
+    "category": "有机化学 - 实验操作",
+    "word_en": "Quench",
+    "word_zh": "淬灭",
+    "example_en": "The reaction was quenched by the careful addition of saturated aqueous ammonium chloride.",
+    "example_zh": "通过小心加入饱和氯化铵水溶液来淬灭反应。"
+  },
+  {
+    "category": "有机化学 - 实验操作",
+    "word_en": "Aliquot",
+    "word_zh": "等分试样",
+    "example_en": "An aliquot of the reaction mixture was removed for NMR analysis.",
+    "example_zh": "取出一等分反应混合物试样用于核磁共振分析。"
+  },
+  {
+    "category": "有机化学 - 反应术语",
+    "word_en": "Substrate",
+    "word_zh": "底物",
+    "example_en": "The choice of substrate heavily influences the yield of the coupling reaction.",
+    "example_zh": "底物的选择严重影响偶联反应的产率。"
+  },
+  {
+    "category": "有机化学 - 反应术语",
+    "word_en": "Byproduct",
+    "word_zh": "副产物",
+    "example_en": "The formation of the undesired byproduct was suppressed by lowering the temperature.",
+    "example_zh": "通过降低温度抑制了不需要的副产物的形成。"
+  },
+  {
+    "category": "有机化学 - 反应术语",
+    "word_en": "Scale-up",
+    "word_zh": "放大实验 / 放大生产",
+    "example_en": "The optimized reaction conditions were successfully applied to a 10-gram scale-up.",
+    "example_zh": "优化的反应条件成功应用于10克级的放大实验。"
+  },
+  {
+    "category": "有机化学 - 光谱学辅助",
+    "word_en": "Auxochrome",
+    "word_zh": "助色团",
+    "example_en": "An amino group can act as an auxochrome, shifting the absorption to a longer wavelength.",
+    "example_zh": "氨基可以作为助色团，使吸收峰向长波长方向移动。"
+  },
+  {
+    "category": "有机化学 - 机理术语",
+    "word_en": "Isomerization",
+    "word_zh": "异构化反应",
+    "example_en": "Cis-trans isomerization can be induced by UV irradiation.",
+    "example_zh": "顺反异构化可由紫外线照射引发。"
+  },
+  {
+    "category": "有机化学 - 机理术语",
+    "word_en": "Homolysis",
+    "word_zh": "均裂",
+    "example_en": "Homolysis of the peroxide bond initiates the radical chain reaction.",
+    "example_zh": "过氧键的均裂引发了自由基链反应。"
+  },
+  {
+    "category": "有机化学 - 机理术语",
+    "word_en": "Heterolysis",
+    "word_zh": "异裂",
+    "example_en": "Heterolysis of the carbon-halogen bond generates a carbocation intermediate.",
+    "example_zh": "碳-卤键的异裂生成碳正离子中间体。"
+  },
+  {
+    "category": "有机化学 - 动力学",
+    "word_en": "Bimolecular",
+    "word_zh": "双分子的",
+    "example_en": "The SN2 mechanism is characterized by a bimolecular rate-determining step.",
+    "example_zh": "SN2机理的特征是双分子决速步。"
+  },
+  {
+    "category": "有机化学 - 动力学",
+    "word_en": "Unimolecular",
+    "word_zh": "单分子的",
+    "example_en": "The rate of a unimolecular reaction depends only on the concentration of the substrate.",
+    "example_zh": "单分子反应的速率仅取决于底物的浓度。"
+  },
+  {
+    "category": "有机化学 - 反应路径",
+    "word_en": "Concerted",
+    "word_zh": "协同的",
+    "example_en": "Bond breaking and bond making occur simultaneously in a concerted mechanism.",
+    "example_zh": "在协同机理中，化学键的断裂和形成同时发生。"
+  },
+  {
+    "category": "有机化学 - 反应路径",
+    "word_en": "Stepwise",
+    "word_zh": "分步的",
+    "example_en": "Unlike the Diels-Alder reaction, this cycloaddition proceeds via a stepwise mechanism.",
+    "example_zh": "与狄尔斯-阿尔德反应不同，该环加成通过分步机理进行。"
+  },
+  {
+    "category": "有机化学 - 热力学",
+    "word_en": "Exothermic",
+    "word_zh": "放热的",
+    "example_en": "The highly exothermic reaction requires a cooling bath to maintain the temperature.",
+    "example_zh": "该剧烈放热反应需要冷却浴来维持温度。"
+  },
+  {
+    "category": "有机化学 - 热力学",
+    "word_en": "Endothermic",
+    "word_zh": "吸热的",
+    "example_en": "For an endothermic process, heat must be continuously supplied to drive the reaction forward.",
+    "example_zh": "对于吸热过程，必须不断提供热量以推动反应进行。"
+  },
+  {
+    "category": "有机化学 - 实验状态",
+    "word_en": "Neat",
+    "word_zh": "纯的 (无溶剂的)",
+    "example_en": "The reaction was performed neat, without the addition of any solvent.",
+    "example_zh": "反应在无溶剂（纯态）条件下进行。"
+  },
+  {
+    "category": "有机化学 - 实验状态",
+    "word_en": "Slurry",
+    "word_zh": "悬浮液 / 浆料",
+    "example_en": "The insoluble catalyst formed a slurry in the reaction medium.",
+    "example_zh": "不溶性催化剂在反应介质中形成悬浮液。"
+  },
+  {
+    "category": "有机化学 - 后处理",
+    "word_en": "Supernatant",
+    "word_zh": "上清液",
+    "example_en": "After centrifugation, the clear supernatant was carefully decanted.",
+    "example_zh": "离心后，小心倾出澄清的上清液。"
+  },
+  {
+    "category": "有机化学 - 后处理",
+    "word_en": "Precipitate",
+    "word_zh": "沉淀物",
+    "example_en": "A white precipitate formed immediately upon the addition of the reagent.",
+    "example_zh": "加入试剂后立即形成白色沉淀。"
+  },
+  {
+    "category": "有机化学 - 后处理",
+    "word_en": "Filtrate",
+    "word_zh": "滤液",
+    "example_en": "The desired product was found in the filtrate rather than the solid residue.",
+    "example_zh": "目标产物存在于滤液中而不是固体残渣中。"
+  },
+  {
+    "category": "有机化学 - 后处理",
+    "word_en": "Brine",
+    "word_zh": "饱和食盐水",
+    "example_en": "The combined organic layers were washed with brine and dried over sodium sulfate.",
+    "example_zh": "合并的有机层用饱和食盐水洗涤，并用硫酸钠干燥。"
+  },
+  {
+    "category": "有机化学 - 后处理",
+    "word_en": "Celite",
+    "word_zh": "硅藻土",
+    "example_en": "The reaction mixture was filtered through a short pad of Celite to remove the metal catalyst.",
+    "example_zh": "反应混合物通过短硅藻土垫过滤以除去金属催化剂。"
+  }
+  ];
+  let currentIndex = 0;
+  let isFlipped = false;
+  const cardElement = document.getElementById('flashcard');
+
+  function updateCard() {
+    if (vocabList.length === 0) return;
+    const currentVocab = vocabList[currentIndex];
+    document.getElementById('wordEn').innerText = currentVocab.word_en;
+    document.getElementById('wordZh').innerText = currentVocab.word_zh;
+    document.getElementById('exampleEn').innerText = currentVocab.example_en;
+    document.getElementById('exampleZh').innerText = currentVocab.example_zh;
+    document.getElementById('categoryBadge').innerText = currentVocab.category;
+    document.getElementById('progressText').innerText = `${currentIndex + 1} / ${vocabList.length}`;
+    isFlipped = false;
+    cardElement.classList.remove('is-flipped');
+  }
+
+  function flipCard() {
+    playSound('flip');
+    isFlipped = !isFlipped;
+    cardElement.classList.toggle('is-flipped');
+  }
+
+  function nextCard(known) {
+    playSound(known ? 'known' : 'unknown');
+    currentIndex = (currentIndex + 1) % vocabList.length;
+    if (isFlipped) {
+      flipCard();
+      setTimeout(updateCard, 350); // 等待翻转动画过半再更新文字
+    } else {
+      updateCard();
+    }
+  }
+
+  // JSON 导入功能
+  function importVocabulary(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        const importedData = JSON.parse(e.target.result);
+        if (Array.isArray(importedData) && importedData.length > 0) {
+          vocabList = importedData;
+          currentIndex = 0;
+          updateCard();
+          alert(`成功导入 ${vocabList.length} 个词汇！`);
+        } else {
+          alert("JSON 格式错误：需要包含词汇对象的数组。");
+        }
+      } catch (error) {
+        alert("文件解析失败，请确保是有效的 JSON 文件。");
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  updateCard();
+</script>
+</body>
+</html>
